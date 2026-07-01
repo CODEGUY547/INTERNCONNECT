@@ -49,13 +49,9 @@ import {
 import type { LucideIcon } from 'lucide-react'
 import {
   accessLevels,
-  aiInsights,
-  attendanceTrend,
   companies,
-  departmentStats,
   permissions,
   roles,
-  taskMix,
 } from './data/mockData'
 import type {
   AccessLevelRecord,
@@ -495,15 +491,15 @@ const rolePanels: Record<RoleId, { title: string; items: string[] }> = {
     title: 'Intern daily flow',
     items: [
       'Check in with GPS and QR validation, then upload daily work evidence.',
-      'Submit structured weekly reports for supervisor review.',
+      'Submit structured daily reports for supervisor review.',
       'Submit complaints, read supervisor comments, download documents, and compare ranking progress.',
     ],
   },
   companySupervisor: {
     title: 'Company supervision queue',
     items: [
-      'Approve attendance, review weekly reports, assign tasks, and validate completed work.',
-      'Spot missing interns, late arrivals, overdue work, and pending weekly reports.',
+      'Monitor attendance, review daily reports, assign tasks, and validate completed work.',
+      'Spot missing interns, late arrivals, overdue work, and pending daily reports.',
       'Handle assigned complaints, add comments, and upload DOCX guidance for assigned interns.',
     ],
   },
@@ -626,6 +622,185 @@ const formatMeters = (value?: number | null) => {
   return value >= 1000 ? `${(value / 1000).toFixed(2)} km` : `${value} m`
 }
 
+const clampPercent = (value: number) => Math.min(100, Math.max(0, Math.round(value)))
+
+const parseStoredDate = (value?: string | null) => {
+  const parsed = Date.parse(String(value ?? ''))
+  return Number.isFinite(parsed) ? new Date(parsed) : new Date()
+}
+
+const localDateKey = (date: Date) => {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+
+  return `${year}-${month}-${day}`
+}
+
+const formatHours = (hours: number) => {
+  if (hours <= 0) return '0h'
+  const wholeHours = Math.floor(hours)
+  const minutes = Math.round((hours - wholeHours) * 60)
+
+  if (wholeHours === 0) return `${minutes}m`
+  return minutes > 0 ? `${wholeHours}h ${minutes}m` : `${wholeHours}h`
+}
+
+const taskBelongsToSession = (task: TaskRecord, session: LoginSession) =>
+  sameCredential(task.studentNo ?? '', session.loginId) ||
+  sameCredential(task.intern ?? '', session.name) ||
+  sameCredential(task.intern ?? '', session.loginId)
+
+const taskBelongsToPlacement = (task: TaskRecord, placement: InternRecord) =>
+  sameCredential(task.studentNo ?? '', placement.studentNo) ||
+  samePersonName(task.intern ?? '', placement.name)
+
+const evaluationBelongsToSession = (evaluation: ManualEvaluationRecord, session: LoginSession) =>
+  sameCredential(evaluation.studentNo, session.loginId) || samePersonName(evaluation.internName, session.name)
+
+const calculateAttendanceStats = (events: AttendanceEventRecord[], now = new Date()) => {
+  const sortedEvents = [...events].sort(
+    (left, right) => parseStoredDate(left.occurredAt).getTime() - parseStoredDate(right.occurredAt).getTime(),
+  )
+  const activeDays = new Set<string>()
+  const checkInDays = new Set<string>()
+  const todayKey = localDateKey(now)
+  let openCheckIn: Date | null = null
+  let totalMs = 0
+  let checkedInNow = false
+
+  for (const event of sortedEvents) {
+    const eventDate = parseStoredDate(event.occurredAt)
+    const eventKey = localDateKey(eventDate)
+    activeDays.add(eventKey)
+
+    if (event.type === 'check-in') {
+      checkInDays.add(eventKey)
+      openCheckIn = eventDate
+      checkedInNow = true
+      continue
+    }
+
+    if (openCheckIn) {
+      totalMs += Math.max(0, eventDate.getTime() - openCheckIn.getTime())
+      openCheckIn = null
+    }
+    checkedInNow = false
+  }
+
+  if (openCheckIn && localDateKey(openCheckIn) === todayKey) {
+    totalMs += Math.max(0, now.getTime() - openCheckIn.getTime())
+  }
+
+  const hoursLogged = totalMs / 3_600_000
+  const attendanceRate =
+    checkInDays.size > 0 ? clampPercent((checkInDays.size / Math.max(checkInDays.size, activeDays.size)) * 100) : 0
+
+  return {
+    attendanceRate,
+    checkedInNow,
+    checkInDays: checkInDays.size,
+    hoursLabel: formatHours(hoursLogged),
+    hoursLogged,
+    latestEvent: sortedEvents.at(-1) ?? null,
+    todayCheckedIn: checkInDays.has(todayKey),
+  }
+}
+
+const calculateEvaluationScore = (evaluations: ManualEvaluationRecord[]) => {
+  if (evaluations.length === 0) return 0
+
+  return clampPercent(
+    evaluations.reduce((sum, evaluation) => sum + Number(evaluation.overallScore ?? 0), 0) / evaluations.length,
+  )
+}
+
+const calculateTaskCompletionRate = (tasks: TaskRecord[]) =>
+  tasks.length > 0 ? clampPercent((tasks.filter((task) => task.status === 'Completed').length / tasks.length) * 100) : 0
+
+const buildProgramTrend = (
+  attendanceEvents: AttendanceEventRecord[],
+  taskItems: TaskRecord[],
+  reportItems: ReportRecord[],
+  placementItems: InternRecord[],
+): TrendPoint[] => {
+  const dates = Array.from({ length: 6 }, (_, index) => {
+    const date = new Date()
+    date.setDate(date.getDate() - (5 - index))
+    return date
+  })
+  const assignedInternCount = Math.max(1, placementItems.length)
+  const taskCompletion = calculateTaskCompletionRate(taskItems)
+  const reportCompletion =
+    reportItems.length > 0
+      ? clampPercent((reportItems.filter((report) => report.status === 'Approved').length / reportItems.length) * 100)
+      : 0
+
+  return dates.map((date) => {
+    const key = localDateKey(date)
+    const dayEvents = attendanceEvents.filter((event) => localDateKey(parseStoredDate(event.occurredAt)) === key)
+    const checkedInInterns = new Set(
+      dayEvents.filter((event) => event.type === 'check-in').map((event) => event.studentNo || event.internName),
+    )
+    const geofenceEvents = dayEvents.filter((event) => event.type === 'check-in')
+    const punctuality =
+      geofenceEvents.length > 0
+        ? clampPercent((geofenceEvents.filter((event) => event.geofencePassed).length / geofenceEvents.length) * 100)
+        : 0
+
+    return {
+      attendance: clampPercent((checkedInInterns.size / assignedInternCount) * 100),
+      label: date.toLocaleDateString([], { weekday: 'short' }),
+      punctuality,
+      reports: reportCompletion,
+      tasks: taskCompletion,
+    }
+  })
+}
+
+const buildDepartmentStats = (placements: InternRecord[], tasks: TaskRecord[]) => {
+  const departments = Array.from(new Set(placements.map((placement) => placement.department || 'General'))).slice(0, 6)
+  const sourceDepartments = departments.length > 0 ? departments : ['General']
+
+  return sourceDepartments.map((department) => {
+    const departmentPlacements = placements.filter((placement) => (placement.department || 'General') === department)
+    const departmentTasks = tasks.filter((task) =>
+      departmentPlacements.some((placement) => taskBelongsToPlacement(task, placement)),
+    )
+
+    return {
+      completion: calculateTaskCompletionRate(departmentTasks),
+      department,
+      interns: departmentPlacements.length,
+    }
+  })
+}
+
+const buildTaskMix = (tasks: TaskRecord[]) => [
+  { color: '#2f9e73', name: 'Completed', value: tasks.filter((task) => task.status === 'Completed').length },
+  { color: '#2f6fbb', name: 'In progress', value: tasks.filter((task) => task.status === 'In Progress').length },
+  { color: '#d89a25', name: 'Pending', value: tasks.filter((task) => task.status === 'Pending').length },
+  { color: '#d9534f', name: 'Overdue', value: tasks.filter((task) => task.status === 'Overdue').length },
+]
+
+const buildInsights = (
+  attendanceStats: ReturnType<typeof calculateAttendanceStats>,
+  taskItems: TaskRecord[],
+  reportItems: ReportRecord[],
+  evaluationScore: number,
+) => {
+  const insights = [
+    attendanceStats.todayCheckedIn
+      ? `Attendance is active today. Logged time is now ${attendanceStats.hoursLabel}.`
+      : 'No check-in has been recorded today.',
+    `${taskItems.filter((task) => task.status !== 'Completed').length} task(s) still need action.`,
+    `${reportItems.filter((report) => report.status !== 'Approved').length} report(s) are still in the approval workflow.`,
+    evaluationScore > 0 ? `Latest evaluation average is ${evaluationScore}%.` : 'No supervisor evaluation has been submitted yet.',
+  ]
+
+  return insights.slice(0, 4)
+}
+
 function App() {
   const [session, setSession] = useState<LoginSession | null>(() => readStoredSession())
   const [approvedAccounts, setApprovedAccounts] = useState<AppAccount[]>(() => readApprovedAccounts())
@@ -635,13 +810,14 @@ function App() {
   const [announcementComposerOpen, setAnnouncementComposerOpen] = useState(false)
   const [announcementDraft, setAnnouncementDraft] = useState<AnnouncementDraft>(defaultAnnouncementDraft)
   const [complaintItems, setComplaintItems] = useState<ComplaintRecord[]>([])
+  const [manualEvaluationItems, setManualEvaluationItems] = useState<ManualEvaluationRecord[]>([])
   const [reportItems, setReportItems] = useState<ReportRecord[]>([])
   const [taskItems, setTaskItems] = useState<TaskRecord[]>([])
   const [placementItems, setPlacementItems] = useState<InternRecord[]>(() => readPlacements())
   const [activeView, setActiveView] = useState<ViewKey>('overview')
   const [darkMode, setDarkMode] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
-  const [checkedIn, setCheckedIn] = useState(true)
+  const [checkedIn, setCheckedIn] = useState(false)
   const [toast, setToast] = useState('Real-time sync connected')
   const [liveTick, setLiveTick] = useState(0)
 
@@ -685,7 +861,7 @@ function App() {
     if (!session) return
     let ignored = false
 
-    const loadBackendState = async () => {
+    const loadBackendState = async (showOfflineToast = false) => {
       try {
         const [
           announcementsPayload,
@@ -694,6 +870,7 @@ function App() {
           attendanceEventsPayload,
           tasksPayload,
           reportsPayload,
+          evaluationsPayload,
         ] = await Promise.all([
           apiJson<{ announcements: AnnouncementRecord[] }>('/api/announcements'),
           apiJson<{ complaints: ComplaintRecord[] }>('/api/complaints'),
@@ -701,6 +878,7 @@ function App() {
           apiJson<{ events: AttendanceEventRecord[] }>('/api/attendance-events'),
           apiJson<{ tasks: TaskRecord[] }>('/api/tasks'),
           apiJson<{ reports: ReportRecord[] }>('/api/reports'),
+          apiJson<{ evaluations: ManualEvaluationRecord[] }>('/api/evaluations'),
         ])
         const accountsPayload =
           role === 'admin' ? await apiJson<{ accounts: AppAccount[] }>('/api/accounts/approved') : { accounts: [] }
@@ -723,17 +901,22 @@ function App() {
         writeStoredArray(attendanceEventsStorageKey, attendanceEventsPayload.events)
         setTaskItems(tasksPayload.tasks)
         setReportItems(reportsPayload.reports)
+        setManualEvaluationItems(evaluationsPayload.evaluations)
       } catch {
-        if (!ignored) {
+        if (!ignored && showOfflineToast) {
           triggerToast('Local API offline; using browser fallback data')
         }
       }
     }
 
-    void loadBackendState()
+    void loadBackendState(true)
+    const refreshTimer = window.setInterval(() => {
+      void loadBackendState(false)
+    }, 10_000)
 
     return () => {
       ignored = true
+      window.clearInterval(refreshTimer)
     }
   }, [role, session])
 
@@ -744,37 +927,140 @@ function App() {
   const sessionLoginId = session?.loginId ?? ''
   const sessionName = session?.name ?? ''
   const sessionOrganization = session?.organization ?? ''
+  const currentInternAttendanceEvents = useMemo(
+    () =>
+      attendanceEvents.filter(
+        (event) =>
+          sameCredential(event.studentNo ?? '', sessionLoginId) ||
+          samePersonName(event.internName ?? '', sessionName),
+      ),
+    [attendanceEvents, sessionLoginId, sessionName],
+  )
+  const currentInternTasks = useMemo(
+    () => (session ? taskItems.filter((task) => taskBelongsToSession(task, session)) : []),
+    [session, taskItems],
+  )
+  const currentInternReports = useMemo(
+    () =>
+      reportItems.filter(
+        (report) =>
+          sameCredential(report.studentNo ?? '', sessionLoginId) ||
+          samePersonName(report.owner ?? '', sessionName),
+      ),
+    [reportItems, sessionLoginId, sessionName],
+  )
+  const currentInternEvaluations = useMemo(
+    () =>
+      session
+        ? manualEvaluationItems.filter((evaluation) => evaluationBelongsToSession(evaluation, session))
+        : [],
+    [manualEvaluationItems, session],
+  )
+  const currentAttendanceStats = useMemo(
+    () => calculateAttendanceStats(role === 'intern' ? currentInternAttendanceEvents : attendanceEvents),
+    [attendanceEvents, currentInternAttendanceEvents, liveTick, role],
+  )
+  const currentEvaluationScore = useMemo(
+    () => calculateEvaluationScore(role === 'intern' ? currentInternEvaluations : manualEvaluationItems),
+    [currentInternEvaluations, manualEvaluationItems, role],
+  )
+  const livePlacementItems = useMemo(
+    () =>
+      placementItems.map((placement) => {
+        const placementEvents = attendanceEvents.filter(
+          (event) =>
+            sameCredential(event.studentNo ?? '', placement.studentNo) ||
+            samePersonName(event.internName ?? '', placement.name),
+        )
+        const placementEvaluations = manualEvaluationItems.filter(
+          (evaluation) =>
+            sameCredential(evaluation.studentNo, placement.studentNo) ||
+            samePersonName(evaluation.internName, placement.name),
+        )
+        const placementAttendance = calculateAttendanceStats(placementEvents)
+        const placementScore = calculateEvaluationScore(placementEvaluations)
+
+        return {
+          ...placement,
+          attendance: placementAttendance.checkInDays > 0 ? placementAttendance.attendanceRate : placement.attendance,
+          performance: placementScore > 0 ? placementScore : placement.performance,
+        }
+      }),
+    [attendanceEvents, liveTick, manualEvaluationItems, placementItems],
+  )
+  const programTrend = useMemo(
+    () => buildProgramTrend(attendanceEvents, taskItems, reportItems, livePlacementItems),
+    [attendanceEvents, livePlacementItems, reportItems, taskItems],
+  )
+  const overviewInsights = useMemo(
+    () =>
+      buildInsights(
+        currentAttendanceStats,
+        role === 'intern' ? currentInternTasks : taskItems,
+        role === 'intern' ? currentInternReports : reportItems,
+        currentEvaluationScore,
+      ),
+    [
+      currentAttendanceStats,
+      currentEvaluationScore,
+      currentInternReports,
+      currentInternTasks,
+      reportItems,
+      role,
+      taskItems,
+    ],
+  )
+
+  useEffect(() => {
+    if (role === 'intern') {
+      setCheckedIn(currentAttendanceStats.checkedInNow)
+    }
+  }, [currentAttendanceStats.checkedInNow, role])
+
   const dashboardMetrics = useMemo<Record<RoleId, Metric[]>>(() => {
-    const activePlacementCount = placementItems.filter((placement) => placement.status === 'Active').length
+    const activePlacementCount = livePlacementItems.filter((placement) => placement.status === 'Active').length
     const placementPercentage =
-      placementItems.length > 0 ? Math.round((activePlacementCount / placementItems.length) * 100) : 0
-    const openTaskCount = taskItems.filter((task) => task.status !== 'Completed').length
-    const completedTaskCount = taskItems.filter((task) => task.status === 'Completed').length
-    const taskCompletionRate = taskItems.length > 0 ? Math.round((completedTaskCount / taskItems.length) * 100) : 0
+      livePlacementItems.length > 0 ? Math.round((activePlacementCount / livePlacementItems.length) * 100) : 0
+    const visibleTasksForMetrics = role === 'intern' ? currentInternTasks : taskItems
+    const openTaskCount = visibleTasksForMetrics.filter((task) => task.status !== 'Completed').length
+    const completedTaskCount = visibleTasksForMetrics.filter((task) => task.status === 'Completed').length
+    const taskCompletionRate = calculateTaskCompletionRate(visibleTasksForMetrics)
     const unresolvedComplaintCount = complaintItems.filter((complaint) => complaint.status !== 'Resolved').length
     const pendingReportCount = reportItems.filter((report) => !['Approved', 'Rejected'].includes(report.status)).length
-    const currentInternPlacement =
-      placementItems.find((placement) => sameCredential(placement.studentNo, sessionLoginId)) ??
-      placementItems.find((placement) => samePersonName(placement.name, sessionName))
-    const companySupervisorPlacements = placementItems.filter((placement) =>
+    const companySupervisorPlacements = livePlacementItems.filter((placement) =>
       sameCredential(placement.company, sessionOrganization),
     )
-    const universitySupervisorPlacements = placementItems.filter((placement) =>
+    const universitySupervisorPlacements = livePlacementItems.filter((placement) =>
       sameCredential(placement.university, sessionOrganization),
     )
 
     return {
       admin: [
-        { label: 'Total interns', value: String(placementItems.length), delta: `${activePlacementCount} active now`, tone: 'blue' },
+        { label: 'Total interns', value: String(livePlacementItems.length), delta: `${activePlacementCount} active now`, tone: 'blue' },
         { label: 'Active placements', value: String(activePlacementCount), delta: `${placementPercentage}% running`, tone: 'green' },
         { label: 'Attendance events', value: String(attendanceEvents.length), delta: 'Saved check-ins/out', tone: 'amber' },
         { label: 'Pending reports', value: String(pendingReportCount), delta: pendingReportCount ? 'Need review' : 'No pending reports', tone: 'violet' },
       ],
       intern: [
-        { label: 'Attendance rate', value: `${currentInternPlacement?.attendance ?? 0}%`, delta: 'Based on saved placement', tone: 'green' },
-        { label: 'Hours logged', value: '0', delta: 'Awaiting timesheet records', tone: 'blue' },
+        {
+          label: 'Attendance rate',
+          value: `${currentAttendanceStats.attendanceRate}%`,
+          delta: currentAttendanceStats.todayCheckedIn ? 'Checked in today' : 'No check-in today',
+          tone: 'green',
+        },
+        {
+          label: 'Hours logged',
+          value: currentAttendanceStats.hoursLabel,
+          delta: currentAttendanceStats.checkedInNow ? 'Live shift running' : 'From saved check-ins/out',
+          tone: 'blue',
+        },
         { label: 'Open tasks', value: String(openTaskCount), delta: `${completedTaskCount} completed`, tone: 'amber' },
-        { label: 'Evaluation score', value: `${currentInternPlacement?.performance ?? 0}%`, delta: 'Based on saved placement', tone: 'violet' },
+        {
+          label: 'Evaluation score',
+          value: `${currentEvaluationScore}%`,
+          delta: currentInternEvaluations.length ? 'From supervisor evaluations' : 'No evaluation submitted',
+          tone: 'violet',
+        },
       ],
       companySupervisor: [
         { label: 'Assigned interns', value: String(companySupervisorPlacements.length), delta: sessionOrganization || 'No organization', tone: 'blue' },
@@ -788,13 +1074,28 @@ function App() {
         { label: 'Attendance events', value: String(attendanceEvents.length), delta: 'Student check-ins/out', tone: 'amber' },
         {
           label: 'At-risk students',
-          value: String(placementItems.filter((placement) => placement.status === 'Needs review').length),
+          value: String(livePlacementItems.filter((placement) => placement.status === 'Needs review').length),
           delta: 'Need review placements',
           tone: 'red',
         },
       ],
     }
-  }, [attendanceEvents.length, complaintItems, placementItems, reportItems, sessionLoginId, sessionName, sessionOrganization, taskItems])
+  }, [
+    attendanceEvents.length,
+    complaintItems,
+    currentAttendanceStats,
+    currentEvaluationScore,
+    currentInternEvaluations.length,
+    currentInternTasks,
+    livePlacementItems,
+    placementItems,
+    reportItems,
+    role,
+    sessionLoginId,
+    sessionName,
+    sessionOrganization,
+    taskItems,
+  ])
 
   const searchResults = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -816,6 +1117,12 @@ function App() {
   }
 
   const handleAttendanceEvent = (event: AttendanceEventRecord) => {
+    if (
+      sameCredential(event.studentNo ?? '', sessionLoginId) ||
+      samePersonName(event.internName ?? '', sessionName)
+    ) {
+      setCheckedIn(event.type === 'check-in')
+    }
     setAttendanceEvents((currentEvents) => {
       const nextEvents = [event, ...currentEvents.filter((item) => item.id !== event.id)].slice(0, 100)
       writeStoredArray(attendanceEventsStorageKey, nextEvents)
@@ -1081,6 +1388,43 @@ function App() {
         })
       })
 
+    reportItems
+      .filter((report) => {
+        if (role === 'admin') return !['Approved', 'Rejected'].includes(report.status)
+        if (role === 'intern') {
+          return sameCredential(report.studentNo ?? '', session?.loginId ?? '') || samePersonName(report.owner, session?.name ?? '')
+        }
+        if (role === 'companySupervisor') {
+          return sameCredential(report.company ?? '', session?.organization ?? '') && report.status === 'Pending company approval'
+        }
+        if (role === 'universitySupervisor') {
+          return sameCredential(report.university ?? '', session?.organization ?? '') && report.status === 'Pending university approval'
+        }
+
+        return false
+      })
+      .slice(0, 6)
+      .forEach((report) => {
+        items.push({
+          actionLabel: 'Open reports',
+          category: 'Report',
+          description:
+            role === 'intern'
+              ? `${report.title} is currently ${report.status}.`
+              : `${report.owner} submitted ${report.title}. Current stage: ${report.status}.`,
+          id: `report-${report.id ?? report.title}`,
+          onAction: () => setActiveView('reports'),
+          time: report.submitted,
+          title:
+            role === 'companySupervisor'
+              ? 'Report waiting for company approval'
+              : role === 'universitySupervisor'
+                ? 'Report waiting for university review'
+                : report.title,
+          tone: report.status === 'Approved' ? 'green' : report.status === 'Rejected' ? 'red' : 'blue',
+        })
+      })
+
     taskItems
       .filter((task) =>
         role === 'intern'
@@ -1118,7 +1462,18 @@ function App() {
     })
 
     return items
-  }, [accountRequests, announcements, attendanceEvents, complaintItems, role, session?.loginId, session?.name, taskItems])
+  }, [
+    accountRequests,
+    announcements,
+    attendanceEvents,
+    complaintItems,
+    reportItems,
+    role,
+    session?.loginId,
+    session?.name,
+    session?.organization,
+    taskItems,
+  ])
 
   const handleLogin = (account: AppAccount, accessToken: string, expiresIn: number) => {
     const nextSession = createSession(account, accessToken, expiresIn)
@@ -1301,11 +1656,14 @@ function App() {
         <section className="content">
           {activeView === 'overview' && (
             <OverviewDashboard
-              checkedIn={checkedIn}
+              attendanceStats={currentAttendanceStats}
+              checkedIn={role === 'intern' ? currentAttendanceStats.checkedInNow : checkedIn}
+              insightItems={overviewInsights}
               liveTick={liveTick}
               metrics={dashboardMetrics[role]}
               onNavigate={setActiveView}
-              placements={placementItems}
+              placements={livePlacementItems}
+              programTrend={programTrend}
               role={role}
               triggerToast={triggerToast}
             />
@@ -1315,7 +1673,7 @@ function App() {
               attendanceEvents={attendanceEvents}
               checkedIn={checkedIn}
               onAttendanceEvent={handleAttendanceEvent}
-              placements={placementItems}
+              placements={livePlacementItems}
               role={role}
               session={session}
               setCheckedIn={setCheckedIn}
@@ -1324,6 +1682,7 @@ function App() {
           )}
           {activeView === 'tasks' && (
             <TasksView
+              placements={livePlacementItems}
               role={role}
               session={session}
               setTaskItems={setTaskItems}
@@ -1333,18 +1692,29 @@ function App() {
           )}
           {activeView === 'reports' && (
             <ReportsView
-              placements={placementItems}
+              placements={livePlacementItems}
+              reportItems={reportItems}
               role={role}
               session={session}
+              setReportItems={setReportItems}
               triggerToast={triggerToast}
             />
           )}
-          {activeView === 'analytics' && <AnalyticsView />}
+          {activeView === 'analytics' && (
+            <AnalyticsView
+              attendanceEvents={attendanceEvents}
+              placements={livePlacementItems}
+              reportItems={reportItems}
+              taskItems={taskItems}
+            />
+          )}
           {activeView === 'evaluations' && (
             <EvaluationsView
-              placements={placementItems}
+              manualEvaluations={manualEvaluationItems}
+              placements={livePlacementItems}
               role={role}
               session={session}
+              setManualEvaluations={setManualEvaluationItems}
               triggerToast={triggerToast}
             />
           )}
@@ -1358,7 +1728,7 @@ function App() {
             />
           )}
           {activeView === 'documents' && <DocumentsView role={role} triggerToast={triggerToast} />}
-          {activeView === 'rankings' && <RankingsView placements={placementItems} />}
+          {activeView === 'rankings' && <RankingsView placements={livePlacementItems} />}
           {activeView === 'notifications' && (
             <NotificationsView notificationItems={notificationItems} onNavigate={setActiveView} />
           )}
@@ -1367,7 +1737,7 @@ function App() {
             <DirectoryView
               onDeleteIntern={handleDeleteIntern}
               onSavePlacement={handleSavePlacement}
-              placements={placementItems}
+              placements={livePlacementItems}
               role={role}
               triggerToast={triggerToast}
             />
@@ -1967,14 +2337,20 @@ function OverviewDashboard({
   onNavigate,
   triggerToast,
   checkedIn,
+  attendanceStats,
+  insightItems,
   liveTick,
+  programTrend,
 }: ViewProps & {
+  attendanceStats: ReturnType<typeof calculateAttendanceStats>
   role: RoleId
   metrics: Metric[]
   placements: InternRecord[]
   onNavigate: (view: ViewKey) => void
   checkedIn: boolean
+  insightItems: string[]
   liveTick: number
+  programTrend: TrendPoint[]
 }) {
   const roleInfo = rolePanels[role]
   const overviewPlacement = placements.find((placement) => placement.status === 'Active') ?? placements[0]
@@ -2025,7 +2401,7 @@ function OverviewDashboard({
           <TrendChart
             colorA="#2f6fbb"
             colorB="#d89a25"
-            data={attendanceTrend}
+            data={programTrend}
             labelA="Attendance"
             labelB="Punctuality"
             seriesA="attendance"
@@ -2037,12 +2413,19 @@ function OverviewDashboard({
       <section className="panel">
         <PanelHeader icon={Bot} title="AI supervision insights" />
         <div className="insight-list">
-          {aiInsights.map((insight, index) => (
-            <div className="insight-item" key={insight}>
-              <span>{index + 1}</span>
-              <p>{insight}</p>
+          {insightItems.length === 0 ? (
+            <div className="empty-state">
+              <strong>No live insights yet</strong>
+              <p>Attendance, tasks, reports, and evaluations will generate insights as records are created.</p>
             </div>
-          ))}
+          ) : (
+            insightItems.map((insight, index) => (
+              <div className="insight-item" key={insight}>
+                <span>{index + 1}</span>
+                <p>{insight}</p>
+              </div>
+            ))
+          )}
         </div>
       </section>
 
@@ -2062,11 +2445,26 @@ function OverviewDashboard({
         <PanelHeader icon={QrCode} title="Attendance console" />
         <div className="attendance-console">
           <div className={checkedIn ? 'status-orb green' : 'status-orb amber'}>
-            {checkedIn ? 'Working' : 'Ready'}
+            {role === 'intern' ? (checkedIn ? 'Working' : 'Ready') : attendanceStats.todayCheckedIn ? 'Active' : 'Waiting'}
           </div>
           <div>
-            <strong>{checkedIn ? 'Checked in' : 'Awaiting check-in'}</strong>
-            <span>{overviewPlacement ? `Assigned workplace: ${overviewPlacement.company}` : 'No placement assigned yet'}</span>
+            <strong>
+              {role === 'intern'
+                ? checkedIn
+                  ? 'Checked in'
+                  : 'Awaiting check-in'
+                : attendanceStats.todayCheckedIn
+                  ? 'Intern attendance received today'
+                  : 'No intern check-in today'}
+            </strong>
+            <span>
+              {overviewPlacement
+                ? role === 'intern'
+                  ? `Assigned workplace: ${overviewPlacement.company}`
+                  : `${attendanceStats.checkInDays} recorded attendance day(s)`
+                : 'No placement assigned yet'}
+            </span>
+            <small>{attendanceStats.hoursLabel} logged from saved attendance events</small>
           </div>
         </div>
         <div className="button-row">
@@ -2074,10 +2472,12 @@ function OverviewDashboard({
             <MapPin size={16} aria-hidden="true" />
             <span>Open attendance</span>
           </button>
-          <button className="secondary-button" onClick={() => onNavigate('attendance')} type="button">
-            <QrCode size={16} aria-hidden="true" />
-            <span>Scan QR</span>
-          </button>
+          {role === 'intern' && (
+            <button className="secondary-button" onClick={() => onNavigate('attendance')} type="button">
+              <QrCode size={16} aria-hidden="true" />
+              <span>Check in/out</span>
+            </button>
+          )}
         </div>
       </section>
 
@@ -2191,6 +2591,7 @@ function AttendanceView({
   const [watchId, setWatchId] = useState<number | null>(null)
   const [qrScannedAt, setQrScannedAt] = useState('')
   const [policyOpen, setPolicyOpen] = useState(false)
+  const canManageAttendance = role === 'intern'
   const assignedPlacement = useMemo(
     () =>
       placements.find((placement) => sameCredential(placement.studentNo, session.loginId)) ??
@@ -2209,9 +2610,11 @@ function AttendanceView({
   const externalMapUrl = `https://www.openstreetmap.org/?mlat=${mapLatitude}&mlon=${mapLongitude}#map=17/${mapLatitude}/${mapLongitude}`
   const googleMapUrl = `https://www.google.com/maps/search/?api=1&query=${mapLatitude},${mapLongitude}`
   const attendanceRows = useMemo<AttendanceRecord[]>(() => {
-    const rowsByStudent = new Map<string, AttendanceRecord>()
+    const rowsByStudent = new Map<string, AttendanceRecord & { openCheckIn?: Date | null; totalMs: number }>()
 
-    attendanceEvents.forEach((event) => {
+    ;[...attendanceEvents]
+      .sort((left, right) => parseStoredDate(left.occurredAt).getTime() - parseStoredDate(right.occurredAt).getTime())
+      .forEach((event) => {
       const key = event.studentNo || event.internName
       const current =
         rowsByStudent.get(key) ??
@@ -2222,20 +2625,28 @@ function AttendanceView({
           hours: '-',
           location: event.company,
           name: event.internName,
+          openCheckIn: null,
           status: 'Absent',
-        } satisfies AttendanceRecord)
+          totalMs: 0,
+        } satisfies AttendanceRecord & { openCheckIn?: Date | null; totalMs: number })
 
       if (event.type === 'check-in') {
-        current.checkIn = current.checkIn === '-' ? event.occurredAt : current.checkIn
-        current.checkOut = current.checkOut === '-' ? 'Working' : current.checkOut
+        current.checkIn = event.occurredAt
+        current.checkOut = 'Working'
         current.distance = formatMeters(event.distanceMeters)
-        current.hours = current.status === 'Checked out' ? current.hours : 'In progress'
+        current.hours = 'In progress'
         current.location = event.company
-        current.status = current.status === 'Checked out' ? current.status : 'Working'
+        current.openCheckIn = parseStoredDate(event.occurredAt)
+        current.status = 'Working'
       } else {
-        current.checkOut = current.checkOut === '-' || current.checkOut === 'Working' ? event.occurredAt : current.checkOut
+        const checkedOutAt = parseStoredDate(event.occurredAt)
+        if (current.openCheckIn) {
+          current.totalMs += Math.max(0, checkedOutAt.getTime() - current.openCheckIn.getTime())
+          current.openCheckIn = null
+        }
+        current.checkOut = event.occurredAt
         current.distance = formatMeters(event.distanceMeters)
-        current.hours = 'Completed'
+        current.hours = formatHours(current.totalMs / 3_600_000)
         current.location = event.company
         current.status = 'Checked out'
       }
@@ -2243,7 +2654,19 @@ function AttendanceView({
       rowsByStudent.set(key, current)
     })
 
-    return Array.from(rowsByStudent.values())
+    return Array.from(rowsByStudent.values()).map(({ openCheckIn, totalMs, ...record }) => {
+      if (openCheckIn) {
+        const sameDay = localDateKey(openCheckIn) === localDateKey(new Date())
+        const runningMs = sameDay ? Math.max(0, Date.now() - openCheckIn.getTime()) : 0
+        const liveHours = (totalMs + runningMs) / 3_600_000
+        return {
+          ...record,
+          hours: liveHours > 0 ? `${formatHours(liveHours)} so far` : 'In progress',
+        }
+      }
+
+      return record
+    })
   }, [attendanceEvents])
   const personalAttendanceRows = attendanceRows.filter(
     (record) =>
@@ -2485,161 +2908,188 @@ function AttendanceView({
       <div className="module-header">
         <div>
           <span className="eyebrow-text">GPS, QR, device, IP, duration</span>
-          <h2>Real-time attendance</h2>
+          <h2>{canManageAttendance ? 'Real-time attendance' : 'Intern attendance monitor'}</h2>
         </div>
-        <div className="button-row">
-          <button
-            className="primary-button"
-            onClick={submitCheckIn}
-            type="button"
-          >
-            <MapPin size={17} aria-hidden="true" />
-            <span>Check in</span>
-          </button>
-          <button
-            className="secondary-button"
-            onClick={watchId === null ? startLiveGps : stopLiveGps}
-            type="button"
-          >
-            <Wifi size={17} aria-hidden="true" />
-            <span>{watchId === null ? 'Live GPS' : 'Stop GPS'}</span>
-          </button>
-          <button
-            className="secondary-button"
-            onClick={() => {
-              void saveGpsCheckOut()
-            }}
-            type="button"
-          >
-            <Clock size={17} aria-hidden="true" />
-            <span>Check out</span>
-          </button>
-        </div>
-      </div>
-
-      <div className="split-grid">
-        <section className="panel">
-          <PanelHeader icon={Smartphone} title="Verification snapshot" />
-          <div className="verification-map">
-            <div
-              className={
-                liveLocation?.geofencePassed
-                  ? 'map-ring geofence-pass'
-                  : liveLocation
-                    ? 'map-ring geofence-fail'
-                    : 'map-ring'
-              }
+        {canManageAttendance && (
+          <div className="button-row">
+            <button
+              className="primary-button"
+              onClick={submitCheckIn}
+              type="button"
             >
-              <MapPin size={32} aria-hidden="true" />
-            </div>
-            <div className="map-details">
-              <strong>
-                {liveLocation
-                  ? liveLocation.geofencePassed
-                    ? 'Inside allowed radius'
-                    : 'Outside allowed radius'
-                  : checkedIn
-                    ? 'Check-in active'
-                    : 'Ready for live GPS check'}
-              </strong>
-              <span>Assigned company: {assignedCompanySite.name}</span>
-              <span>Company coordinates: {formatCoordinates(assignedCompanySite)}</span>
-              <span>Allowed radius: {assignedCompanySite.radiusMeters} m</span>
-              <span>Current distance: {formatMeters(liveLocation?.distanceMeters)}</span>
-              <span>GPS accuracy: {formatMeters(liveLocation?.accuracy)}</span>
-              <span>Coordinates: {liveLocation ? `${liveLocation.latitude.toFixed(6)}, ${liveLocation.longitude.toFixed(6)}` : 'Not captured yet'}</span>
-              <span>Last update: {liveLocation?.updatedAt ?? 'Waiting'}</span>
-              {geoState.error && <span className="gps-error">{geoState.error}</span>}
-            </div>
-          </div>
-        </section>
-
-        <section className="panel">
-          <PanelHeader icon={MapPin} title="Live map" />
-          <div className="live-map">
-            <iframe
-              src={mapUrl}
-              title="Live GPS map"
-            />
-          </div>
-          <div className="button-row">
-            <a className="secondary-link" href={externalMapUrl} rel="noreferrer" target="_blank">
-              <MapPin size={16} aria-hidden="true" />
-              <span>Open map</span>
-            </a>
-            <a className="secondary-link" href={googleMapUrl} rel="noreferrer" target="_blank">
-              <MapPin size={16} aria-hidden="true" />
-              <span>Google Maps</span>
-            </a>
-          </div>
-        </section>
-      </div>
-
-      <div className="split-grid">
-        <section className="panel">
-          <PanelHeader icon={QrCode} title="Company QR attendance" />
-          <div className="qr-box" aria-label="Sample QR code">
-            {Array.from({ length: 49 }, (_, index) => (
-              <span key={index} className={(index * 7 + index) % 5 === 0 ? 'filled' : ''} />
-            ))}
-          </div>
-          <div className="button-row">
+              <MapPin size={17} aria-hidden="true" />
+              <span>Check in</span>
+            </button>
+            <button
+              className="secondary-button"
+              onClick={watchId === null ? startLiveGps : stopLiveGps}
+              type="button"
+            >
+              <Wifi size={17} aria-hidden="true" />
+              <span>{watchId === null ? 'Live GPS' : 'Stop GPS'}</span>
+            </button>
             <button
               className="secondary-button"
               onClick={() => {
-                const scannedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                setQrScannedAt(scannedAt)
-                setCheckedIn(true)
-                triggerToast('QR attendance accepted')
+                void saveGpsCheckOut()
               }}
               type="button"
             >
-              <QrCode size={16} aria-hidden="true" />
-              <span>Scan code</span>
-            </button>
-            <button className="secondary-button" onClick={() => setPolicyOpen((value) => !value)} type="button">
-              <AlertTriangle size={16} aria-hidden="true" />
-              <span>Policy</span>
+              <Clock size={17} aria-hidden="true" />
+              <span>Check out</span>
             </button>
           </div>
-          {qrScannedAt && (
-            <div className="inline-success compact">
-              <CheckCircle2 size={16} aria-hidden="true" />
-              <span>QR attendance accepted at {qrScannedAt}</span>
-            </div>
-          )}
-          {policyOpen && (
-            <div className="policy-panel">
-              <strong>Attendance warning policy</strong>
-              <p>Late arrivals above three times in seven days are flagged for supervisor review.</p>
-              <p>Check-in is blocked outside the approved company radius unless a supervisor resolves the exception.</p>
-              <p>QR check-in must be paired with GPS or supervisor approval before payroll/report export.</p>
-            </div>
-          )}
-        </section>
-
-        <section className="panel">
-          <PanelHeader icon={ShieldCheck} title="GPS security checks" />
-          <div className="security-checks">
-            <div>
-              <CheckCircle2 size={17} aria-hidden="true" />
-              <span>Browser permission required before GPS is read</span>
-            </div>
-            <div>
-              <CheckCircle2 size={17} aria-hidden="true" />
-              <span>Distance is recalculated against registered company coordinates</span>
-            </div>
-            <div>
-              <CheckCircle2 size={17} aria-hidden="true" />
-              <span>Check-in is blocked when outside the allowed radius</span>
-            </div>
-            <div>
-              <CheckCircle2 size={17} aria-hidden="true" />
-              <span>Coordinates, accuracy, timestamp, device, and IP are API-ready</span>
-            </div>
-          </div>
-        </section>
+        )}
       </div>
+
+      {canManageAttendance ? (
+        <>
+          <div className="split-grid">
+            <section className="panel">
+              <PanelHeader icon={Smartphone} title="Verification snapshot" />
+              <div className="verification-map">
+                <div
+                  className={
+                    liveLocation?.geofencePassed
+                      ? 'map-ring geofence-pass'
+                      : liveLocation
+                        ? 'map-ring geofence-fail'
+                        : 'map-ring'
+                  }
+                >
+                  <MapPin size={32} aria-hidden="true" />
+                </div>
+                <div className="map-details">
+                  <strong>
+                    {liveLocation
+                      ? liveLocation.geofencePassed
+                        ? 'Inside allowed radius'
+                        : 'Outside allowed radius'
+                      : checkedIn
+                        ? 'Check-in active'
+                        : 'Ready for live GPS check'}
+                  </strong>
+                  <span>Assigned company: {assignedCompanySite.name}</span>
+                  <span>Company coordinates: {formatCoordinates(assignedCompanySite)}</span>
+                  <span>Allowed radius: {assignedCompanySite.radiusMeters} m</span>
+                  <span>Current distance: {formatMeters(liveLocation?.distanceMeters)}</span>
+                  <span>GPS accuracy: {formatMeters(liveLocation?.accuracy)}</span>
+                  <span>Coordinates: {liveLocation ? `${liveLocation.latitude.toFixed(6)}, ${liveLocation.longitude.toFixed(6)}` : 'Not captured yet'}</span>
+                  <span>Last update: {liveLocation?.updatedAt ?? 'Waiting'}</span>
+                  {geoState.error && <span className="gps-error">{geoState.error}</span>}
+                </div>
+              </div>
+            </section>
+
+            <section className="panel">
+              <PanelHeader icon={MapPin} title="Live map" />
+              <div className="live-map">
+                <iframe
+                  src={mapUrl}
+                  title="Live GPS map"
+                />
+              </div>
+              <div className="button-row">
+                <a className="secondary-link" href={externalMapUrl} rel="noreferrer" target="_blank">
+                  <MapPin size={16} aria-hidden="true" />
+                  <span>Open map</span>
+                </a>
+                <a className="secondary-link" href={googleMapUrl} rel="noreferrer" target="_blank">
+                  <MapPin size={16} aria-hidden="true" />
+                  <span>Google Maps</span>
+                </a>
+              </div>
+            </section>
+          </div>
+
+          <div className="split-grid">
+            <section className="panel">
+              <PanelHeader icon={QrCode} title="Company QR attendance" />
+              <div className="qr-box" aria-label="Sample QR code">
+                {Array.from({ length: 49 }, (_, index) => (
+                  <span key={index} className={(index * 7 + index) % 5 === 0 ? 'filled' : ''} />
+                ))}
+              </div>
+              <div className="button-row">
+                <button
+                  className="secondary-button"
+                  onClick={() => {
+                    const scannedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    setQrScannedAt(scannedAt)
+                    setCheckedIn(true)
+                    triggerToast('QR attendance accepted')
+                  }}
+                  type="button"
+                >
+                  <QrCode size={16} aria-hidden="true" />
+                  <span>Scan code</span>
+                </button>
+                <button className="secondary-button" onClick={() => setPolicyOpen((value) => !value)} type="button">
+                  <AlertTriangle size={16} aria-hidden="true" />
+                  <span>Policy</span>
+                </button>
+              </div>
+              {qrScannedAt && (
+                <div className="inline-success compact">
+                  <CheckCircle2 size={16} aria-hidden="true" />
+                  <span>QR attendance accepted at {qrScannedAt}</span>
+                </div>
+              )}
+              {policyOpen && (
+                <div className="policy-panel">
+                  <strong>Attendance warning policy</strong>
+                  <p>Late arrivals above three times in seven days are flagged for supervisor review.</p>
+                  <p>Check-in is blocked outside the approved company radius unless a supervisor resolves the exception.</p>
+                  <p>QR check-in must be paired with GPS or supervisor approval before payroll/report export.</p>
+                </div>
+              )}
+            </section>
+
+            <section className="panel">
+              <PanelHeader icon={ShieldCheck} title="GPS security checks" />
+              <div className="security-checks">
+                <div>
+                  <CheckCircle2 size={17} aria-hidden="true" />
+                  <span>Browser permission required before GPS is read</span>
+                </div>
+                <div>
+                  <CheckCircle2 size={17} aria-hidden="true" />
+                  <span>Distance is recalculated against registered company coordinates</span>
+                </div>
+                <div>
+                  <CheckCircle2 size={17} aria-hidden="true" />
+                  <span>Check-in is blocked when outside the allowed radius</span>
+                </div>
+                <div>
+                  <CheckCircle2 size={17} aria-hidden="true" />
+                  <span>Coordinates, accuracy, timestamp, device, and IP are API-ready</span>
+                </div>
+              </div>
+            </section>
+          </div>
+        </>
+      ) : (
+        <section className="panel">
+          <PanelHeader icon={ClipboardCheck} title="Supervisor attendance view" />
+          <div className="notification-summary-grid">
+            <article className="mini-card">
+              <CheckCircle2 size={19} aria-hidden="true" />
+              <span>Check-ins</span>
+              <strong>{attendanceEvents.filter((event) => event.type === 'check-in').length}</strong>
+            </article>
+            <article className="mini-card">
+              <Clock size={19} aria-hidden="true" />
+              <span>Check-outs</span>
+              <strong>{attendanceEvents.filter((event) => event.type === 'check-out').length}</strong>
+            </article>
+            <article className="mini-card">
+              <MapPin size={19} aria-hidden="true" />
+              <span>Inside geofence</span>
+              <strong>{attendanceEvents.filter((event) => event.geofencePassed).length}</strong>
+            </article>
+          </div>
+        </section>
+      )}
 
       <DataTable
         columns={['Name', 'Check in', 'Check out', 'Status', 'Location', 'Distance', 'Hours']}
@@ -2665,12 +3115,14 @@ function AttendanceView({
 }
 
 function TasksView({
+  placements,
   role,
   session,
   setTaskItems,
   taskItems,
   triggerToast,
 }: ViewProps & {
+  placements: InternRecord[]
   role: RoleId
   session: LoginSession
   setTaskItems: Dispatch<SetStateAction<TaskRecord[]>>
@@ -2678,16 +3130,19 @@ function TasksView({
 }) {
   const lanes: TaskRecord['status'][] = ['Pending', 'In Progress', 'Completed', 'Overdue', 'Rejected']
   const [composerOpen, setComposerOpen] = useState(false)
+  const assignablePlacements =
+    role === 'companySupervisor'
+      ? placements.filter((placement) => sameCredential(placement.company, session.organization))
+      : placements
   const visibleTaskItems =
     role === 'intern'
-      ? taskItems.filter(
-          (task) => sameCredential(task.intern, session.name) || sameCredential(task.intern, session.loginId),
-        )
+      ? taskItems.filter((task) => taskBelongsToSession(task, session))
       : taskItems
   const [taskDraft, setTaskDraft] = useState({
     deadline: 'Jul 05',
     intern: role === 'intern' ? session.name : '',
     priority: 'Medium' as TaskRecord['priority'],
+    studentNo: '',
     title: '',
   })
 
@@ -2714,21 +3169,43 @@ function TasksView({
     }
   }, [])
 
+  useEffect(() => {
+    if (role === 'intern' || taskDraft.studentNo || assignablePlacements.length === 0) return
+
+    const firstPlacement = assignablePlacements[0]
+    setTaskDraft((current) => ({
+      ...current,
+      intern: firstPlacement.name,
+      studentNo: firstPlacement.studentNo,
+    }))
+  }, [assignablePlacements, role, taskDraft.studentNo])
+
   const createTask = async () => {
     const title = taskDraft.title.trim()
     if (!title) {
       triggerToast('Task title is required')
       return
     }
+    const assignedPlacement =
+      assignablePlacements.find((placement) => sameCredential(placement.studentNo, taskDraft.studentNo)) ??
+      assignablePlacements.find((placement) => samePersonName(placement.name, taskDraft.intern)) ??
+      null
+    if (role !== 'intern' && !assignedPlacement) {
+      triggerToast('Select an assigned intern before creating the task')
+      return
+    }
 
     const task: TaskRecord = {
       attachments: 0,
+      company: assignedPlacement?.company,
       deadline: taskDraft.deadline,
-      intern: taskDraft.intern,
+      intern: assignedPlacement?.name ?? taskDraft.intern,
       priority: taskDraft.priority,
       progress: 0,
       status: 'Pending',
+      studentNo: assignedPlacement?.studentNo,
       title,
+      university: assignedPlacement?.university,
     }
     try {
       const payload = await apiJson<{ task: TaskRecord }>('/api/tasks', {
@@ -2740,9 +3217,30 @@ function TasksView({
       triggerToast(error instanceof Error ? error.message : 'Task could not be created')
       return
     }
-    setTaskDraft({ deadline: 'Jul 05', intern: role === 'intern' ? session.name : '', priority: 'Medium', title: '' })
+    setTaskDraft({ deadline: 'Jul 05', intern: role === 'intern' ? session.name : '', priority: 'Medium', studentNo: '', title: '' })
     setComposerOpen(false)
     triggerToast('Task created and added to Pending')
+  }
+
+  const updateTaskStatus = async (task: TaskRecord, status: TaskRecord['status']) => {
+    const progress = status === 'Completed' ? 100 : status === 'In Progress' ? Math.max(task.progress, 50) : task.progress
+    const taskKey = task.id ?? task.title
+    try {
+      const payload = await apiJson<{ task: TaskRecord }>(`/api/tasks/${encodeURIComponent(taskKey)}`, {
+        body: JSON.stringify({ progress, status }),
+        method: 'PATCH',
+      })
+      setTaskItems((items) =>
+        items.map((item) =>
+          (item.id && payload.task.id && item.id === payload.task.id) || (!item.id && item.title === task.title)
+            ? payload.task
+            : item,
+        ),
+      )
+      triggerToast(`Task moved to ${status}`)
+    } catch (error) {
+      triggerToast(error instanceof Error ? error.message : 'Task could not be updated')
+    }
   }
 
   return (
@@ -2774,10 +3272,27 @@ function TasksView({
             </label>
             <label>
               <span>Intern</span>
-              <input
-                onChange={(event) => setTaskDraft((current) => ({ ...current, intern: event.target.value }))}
-                value={taskDraft.intern}
-              />
+              <select
+                onChange={(event) => {
+                  const placement = assignablePlacements.find((item) => sameCredential(item.studentNo, event.target.value))
+                  setTaskDraft((current) => ({
+                    ...current,
+                    intern: placement?.name ?? '',
+                    studentNo: placement?.studentNo ?? '',
+                  }))
+                }}
+                value={taskDraft.studentNo}
+              >
+                {assignablePlacements.length === 0 ? (
+                  <option value="">No assigned interns</option>
+                ) : (
+                  assignablePlacements.map((placement) => (
+                    <option key={placement.studentNo} value={placement.studentNo}>
+                      {placement.name} ({placement.studentNo})
+                    </option>
+                  ))
+                )}
+              </select>
             </label>
             <label>
               <span>Deadline</span>
@@ -2822,7 +3337,7 @@ function TasksView({
             {visibleTaskItems
               .filter((task) => task.status === lane)
               .map((task) => (
-                <article className="task-card" key={task.title}>
+                <article className="task-card" key={task.id ?? task.title}>
                   <div className="task-top">
                     <StatusPill status={task.priority} />
                     <span>{task.deadline}</span>
@@ -2837,8 +3352,33 @@ function TasksView({
                       {task.attachments}
                     </span>
                   </div>
+                  <div className="task-actions">
+                    {role === 'intern' && task.status === 'Pending' && (
+                      <button className="secondary-button" onClick={() => updateTaskStatus(task, 'In Progress')} type="button">
+                        <Clock size={15} aria-hidden="true" />
+                        <span>Start</span>
+                      </button>
+                    )}
+                    {role === 'intern' && ['In Progress', 'Overdue'].includes(task.status) && (
+                      <button className="primary-button" onClick={() => updateTaskStatus(task, 'Completed')} type="button">
+                        <CheckCircle2 size={15} aria-hidden="true" />
+                        <span>Complete</span>
+                      </button>
+                    )}
+                    {role !== 'intern' && task.status !== 'Completed' && (
+                      <button className="secondary-button" onClick={() => updateTaskStatus(task, 'Completed')} type="button">
+                        <CheckCircle2 size={15} aria-hidden="true" />
+                        <span>Mark complete</span>
+                      </button>
+                    )}
+                  </div>
                 </article>
               ))}
+            {visibleTaskItems.filter((task) => task.status === lane).length === 0 && (
+              <div className="lane-empty">
+                <span>No {lane.toLowerCase()} tasks</span>
+              </div>
+            )}
           </section>
         ))}
       </div>
@@ -2851,7 +3391,6 @@ interface InternshipReportDraft {
   challenges: string
   company: string
   department: string
-  evidence: string
   hoursWorked: string
   nextPlan: string
   periodEnd: string
@@ -2859,7 +3398,6 @@ interface InternshipReportDraft {
   skillsLearned: string
   studentName: string
   studentNo: string
-  supervisorComment: string
   university: string
 }
 
@@ -2868,14 +3406,12 @@ const formatDateInput = (date: Date) => date.toISOString().slice(0, 10)
 const createReportDraft = (session: LoginSession, placement?: InternRecord | null): InternshipReportDraft => {
   const periodEnd = new Date()
   const periodStart = new Date(periodEnd)
-  periodStart.setDate(periodEnd.getDate() - 6)
 
   return {
     activities: '',
     challenges: '',
     company: placement?.company ?? '',
     department: placement?.department ?? '',
-    evidence: '',
     hoursWorked: '',
     nextPlan: '',
     periodEnd: formatDateInput(periodEnd),
@@ -2883,20 +3419,23 @@ const createReportDraft = (session: LoginSession, placement?: InternRecord | nul
     skillsLearned: '',
     studentName: placement?.name ?? session.name,
     studentNo: placement?.studentNo ?? session.loginId,
-    supervisorComment: '',
     university: placement?.university ?? session.organization,
   }
 }
 
 function ReportsView({
   placements,
+  reportItems,
   role,
   session,
+  setReportItems,
   triggerToast,
 }: ViewProps & {
   placements: InternRecord[]
+  reportItems: ReportRecord[]
   role: RoleId
   session: LoginSession
+  setReportItems: Dispatch<SetStateAction<ReportRecord[]>>
 }) {
   const assignedPlacement = useMemo(
     () =>
@@ -2906,7 +3445,6 @@ function ReportsView({
     [placements, session.loginId, session.name],
   )
   const [reportDraft, setReportDraft] = useState<InternshipReportDraft>(() => createReportDraft(session, assignedPlacement))
-  const [reportItems, setReportItems] = useState<ReportRecord[]>([])
   const canSubmitReport = role === 'intern'
   const reportQueueTitle =
     role === 'companySupervisor'
@@ -2931,10 +3469,10 @@ function ReportsView({
       return sameCredential(report.studentNo ?? '', session.loginId) || samePersonName(report.owner, session.name)
     }
     if (role === 'companySupervisor') {
-      return sameCredential(report.company ?? '', session.organization) && report.status === 'Pending company approval'
+      return sameCredential(report.company ?? '', session.organization)
     }
     if (role === 'universitySupervisor') {
-      return sameCredential(report.university ?? '', session.organization) && report.status === 'Pending university approval'
+      return sameCredential(report.university ?? '', session.organization)
     }
 
     return false
@@ -2968,7 +3506,7 @@ function ReportsView({
     return () => {
       ignored = true
     }
-  }, [role, session.loginId, session.name, session.organization])
+  }, [role, session.loginId, session.name, session.organization, setReportItems])
 
   useEffect(() => {
     if (!assignedPlacement) return
@@ -2988,7 +3526,7 @@ function ReportsView({
   }
 
   const reportContent = [
-    'INTERNSHIP WEEKLY REPORT',
+    'INTERNSHIP DAILY REPORT',
     '',
     '1. Student Details',
     `Student name: ${reportDraft.studentName || '-'}`,
@@ -2998,7 +3536,7 @@ function ReportsView({
     '2. Placement Details',
     `Company/organization: ${reportDraft.company || '-'}`,
     `Department/unit: ${reportDraft.department || '-'}`,
-    `Reporting period: ${reportDraft.periodStart || '-'} to ${reportDraft.periodEnd || '-'}`,
+    `Report date: ${reportDraft.periodEnd || reportDraft.periodStart || '-'}`,
     `Hours worked: ${reportDraft.hoursWorked || '-'}`,
     '',
     '3. Work Done During The Period',
@@ -3010,14 +3548,8 @@ function ReportsView({
     '5. Challenges Encountered',
     reportDraft.challenges || '-',
     '',
-    '6. Plan For The Next Reporting Period',
+    '6. Plan For The Next Working Day',
     reportDraft.nextPlan || '-',
-    '',
-    '7. Evidence Or Attachments',
-    reportDraft.evidence || '-',
-    '',
-    '8. Supervisor Comment',
-    reportDraft.supervisorComment || '-',
     '',
     'Declaration: I confirm that the information provided in this report is accurate.',
   ].join('\n')
@@ -3049,8 +3581,8 @@ function ReportsView({
       status: 'Pending company approval',
       studentNo: reportDraft.studentNo || session.loginId,
       submitted: new Date().toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' }),
-      title: `Internship report ${reportDraft.periodStart} to ${reportDraft.periodEnd}`,
-      type: 'Weekly report',
+      title: `Daily internship report ${reportDraft.periodEnd}`,
+      type: 'Daily report',
       university: reportDraft.university,
     }
 
@@ -3107,8 +3639,8 @@ function ReportsView({
     <div className="module-stack">
       <div className="module-header">
         <div>
-          <span className="eyebrow-text">Company approval before university review</span>
-          <h2>{canSubmitReport ? 'Internship report format' : reportQueueTitle}</h2>
+          <span className="eyebrow-text">Daily report, company approval, university review</span>
+          <h2>{canSubmitReport ? 'Daily report format' : reportQueueTitle}</h2>
         </div>
         {canSubmitReport && (
           <div className="button-row">
@@ -3154,12 +3686,15 @@ function ReportsView({
                 <input value={reportDraft.hoursWorked} onChange={(event) => updateReportDraft('hoursWorked', event.target.value)} />
               </label>
               <label>
-                <span>Period start</span>
-                <input type="date" value={reportDraft.periodStart} onChange={(event) => updateReportDraft('periodStart', event.target.value)} />
-              </label>
-              <label>
-                <span>Period end</span>
-                <input type="date" value={reportDraft.periodEnd} onChange={(event) => updateReportDraft('periodEnd', event.target.value)} />
+                <span>Report date</span>
+                <input
+                  type="date"
+                  value={reportDraft.periodEnd}
+                  onChange={(event) => {
+                    updateReportDraft('periodEnd', event.target.value)
+                    updateReportDraft('periodStart', event.target.value)
+                  }}
+                />
               </label>
               <label>
                 <span>Work done</span>
@@ -3176,14 +3711,6 @@ function ReportsView({
               <label>
                 <span>Next plan</span>
                 <textarea value={reportDraft.nextPlan} onChange={(event) => updateReportDraft('nextPlan', event.target.value)} />
-              </label>
-              <label>
-                <span>Evidence/attachments</span>
-                <textarea value={reportDraft.evidence} onChange={(event) => updateReportDraft('evidence', event.target.value)} />
-              </label>
-              <label>
-                <span>Supervisor comment</span>
-                <textarea value={reportDraft.supervisorComment} onChange={(event) => updateReportDraft('supervisorComment', event.target.value)} />
               </label>
             </form>
           </section>
@@ -3206,9 +3733,9 @@ function ReportsView({
             </strong>
             <p>
               {role === 'companySupervisor'
-                ? 'When you approve a submitted intern report, it leaves your queue and moves to the university supervisor.'
+                ? 'When you approve a submitted intern report, it moves to the university supervisor and remains in your report history.'
                 : role === 'universitySupervisor'
-                  ? 'Only reports already approved by the company supervisor appear here.'
+                  ? 'Reports approved by company supervisors appear here and remain stored after university approval.'
                   : 'Administrators can monitor every submitted report and its current approval stage.'}
             </p>
           </div>
@@ -3259,26 +3786,44 @@ function ReportsView({
   )
 }
 
-function AnalyticsView() {
+function AnalyticsView({
+  attendanceEvents,
+  placements,
+  reportItems,
+  taskItems,
+}: {
+  attendanceEvents: AttendanceEventRecord[]
+  placements: InternRecord[]
+  reportItems: ReportRecord[]
+  taskItems: TaskRecord[]
+}) {
+  const programTrend = useMemo(
+    () => buildProgramTrend(attendanceEvents, taskItems, reportItems, placements),
+    [attendanceEvents, placements, reportItems, taskItems],
+  )
+  const taskMixEntries = useMemo(() => buildTaskMix(taskItems), [taskItems])
+  const taskCompletion = calculateTaskCompletionRate(taskItems)
+  const departmentPerformance = useMemo(() => buildDepartmentStats(placements, taskItems), [placements, taskItems])
+
   return (
     <div className="dashboard-grid">
       <section className="panel wide-panel">
         <PanelHeader icon={BarChart3} title="Department performance" />
         <div className="chart-area">
-          <BarComparisonChart />
+          <BarComparisonChart data={departmentPerformance} />
         </div>
       </section>
 
       <section className="panel">
         <PanelHeader icon={ClipboardCheck} title="Task completion mix" />
         <div className="donut-area">
-          <DonutChart />
+          <DonutChart completion={taskCompletion} data={taskMixEntries} />
         </div>
         <div className="legend-list">
-          {taskMix.map((entry) => (
+          {taskMixEntries.map((entry) => (
             <span key={entry.name}>
               <i style={{ background: entry.color }} />
-              {entry.name}
+              {entry.name}: {entry.value}
             </span>
           ))}
         </div>
@@ -3290,7 +3835,7 @@ function AnalyticsView() {
           <TrendChart
             colorA="#7c55c7"
             colorB="#d95f43"
-            data={attendanceTrend}
+            data={programTrend}
             labelA="Tasks"
             labelB="Reports"
             seriesA="tasks"
@@ -3348,14 +3893,18 @@ const calculateManualOverall = (draft: Pick<
   )
 
 function EvaluationsView({
+  manualEvaluations,
   placements,
   role,
   session,
+  setManualEvaluations,
   triggerToast,
 }: ViewProps & {
+  manualEvaluations: ManualEvaluationRecord[]
   placements: InternRecord[]
   role: RoleId
   session: LoginSession
+  setManualEvaluations: Dispatch<SetStateAction<ManualEvaluationRecord[]>>
 }) {
   const companyPlacements = placements.filter((placement) => sameCredential(placement.company, session.organization))
   const evaluationPlacements = role === 'companySupervisor' ? companyPlacements : placements
@@ -3372,7 +3921,6 @@ function EvaluationsView({
     teamworkScore: 70,
     technicalScore: 70,
   })
-  const [manualEvaluations, setManualEvaluations] = useState<ManualEvaluationRecord[]>([])
   const manualOverall = calculateManualOverall(evaluationDraft)
 
   useEffect(() => {
@@ -3403,7 +3951,7 @@ function EvaluationsView({
     return () => {
       ignored = true
     }
-  }, [role, session.loginId, session.name, session.organization])
+  }, [role, session.loginId, session.name, session.organization, setManualEvaluations])
 
   useEffect(() => {
     if (!selectedStudentNo && firstPlacement) {
@@ -4624,19 +5172,21 @@ function DirectoryView({
         </section>
       </div>
 
-      <section className="panel">
-        <PanelHeader icon={LockKeyhole} title="Role permissions" />
-        <div className="permission-grid">
-          <strong>Feature</strong>
-          <strong>Admin</strong>
-          <strong>Intern</strong>
-          <strong>Company</strong>
-          <strong>University</strong>
-          {permissions.map((permission) => (
-            <PermissionRow key={permission.feature} permission={permission} />
-          ))}
-        </div>
-      </section>
+      {role === 'admin' && (
+        <section className="panel">
+          <PanelHeader icon={LockKeyhole} title="Role permissions" />
+          <div className="permission-grid">
+            <strong>Feature</strong>
+            <strong>Admin</strong>
+            <strong>Intern</strong>
+            <strong>Company</strong>
+            <strong>University</strong>
+            {permissions.map((permission) => (
+              <PermissionRow key={permission.feature} permission={permission} />
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   )
 }
@@ -5138,9 +5688,10 @@ function StatusPill({ status }: { status: string }) {
 }
 
 function ProgressBar({ value }: { value: number }) {
+  const safeValue = clampPercent(value)
   return (
-    <div className="progress-track" aria-label={`Progress ${value}%`}>
-      <span style={{ width: `${value}%` }} />
+    <div className="progress-track" aria-label={`Progress ${safeValue}%`}>
+      <span style={{ width: `${safeValue}%` }} />
     </div>
   )
 }
@@ -5169,15 +5720,16 @@ function TrendChart({
   const padding = 38
   const plotWidth = width - padding * 2
   const plotHeight = height - padding * 2
-  const min = 60
+  const min = 0
   const max = 100
-  const pointX = (index: number) => padding + (index / (data.length - 1)) * plotWidth
+  const safeData = data.length > 0 ? data : [{ attendance: 0, label: 'Now', punctuality: 0, reports: 0, tasks: 0 }]
+  const pointX = (index: number) => padding + (safeData.length === 1 ? 0.5 : index / (safeData.length - 1)) * plotWidth
   const pointY = (value: number) => padding + ((max - value) / (max - min)) * plotHeight
   const pathFor = (key: TrendSeriesKey) =>
-    data
+    safeData
       .map((point, index) => `${index === 0 ? 'M' : 'L'} ${pointX(index)} ${pointY(point[key])}`)
       .join(' ')
-  const areaPath = `${pathFor(seriesA)} L ${pointX(data.length - 1)} ${height - padding} L ${padding} ${
+  const areaPath = `${pathFor(seriesA)} L ${pointX(safeData.length - 1)} ${height - padding} L ${padding} ${
     height - padding
   } Z`
 
@@ -5190,7 +5742,7 @@ function TrendChart({
             <stop offset="100%" stopColor={colorA} stopOpacity="0.02" />
           </linearGradient>
         </defs>
-        {[60, 70, 80, 90, 100].map((tick) => (
+        {[0, 25, 50, 75, 100].map((tick) => (
           <g key={tick}>
             <line className="chart-grid" x1={padding} x2={width - padding} y1={pointY(tick)} y2={pointY(tick)} />
             <text className="chart-label" x={8} y={pointY(tick) + 4}>
@@ -5201,7 +5753,7 @@ function TrendChart({
         <path d={areaPath} fill={`url(#${seriesA}-${seriesB}-fill)`} />
         <path className="chart-line" d={pathFor(seriesA)} stroke={colorA} />
         <path className="chart-line thin" d={pathFor(seriesB)} stroke={colorB} />
-        {data.map((point, index) => (
+        {safeData.map((point, index) => (
           <g key={point.label}>
             <circle cx={pointX(index)} cy={pointY(point[seriesA])} fill={colorA} r="4" />
             <circle cx={pointX(index)} cy={pointY(point[seriesB])} fill={colorB} r="3" />
@@ -5225,12 +5777,17 @@ function TrendChart({
   )
 }
 
-function BarComparisonChart() {
+function BarComparisonChart({
+  data,
+}: {
+  data: Array<{ completion: number; department: string; interns: number }>
+}) {
   const width = 680
   const height = 290
   const padding = 42
   const max = 110
-  const groupWidth = (width - padding * 2) / departmentStats.length
+  const safeData = data.length > 0 ? data : [{ completion: 0, department: 'No data', interns: 0 }]
+  const groupWidth = (width - padding * 2) / safeData.length
   const scaleY = (value: number) => (value / max) * (height - padding * 2)
 
   return (
@@ -5247,7 +5804,7 @@ function BarComparisonChart() {
             </g>
           )
         })}
-        {departmentStats.map((item, index) => {
+        {safeData.map((item, index) => {
           const x = padding + index * groupWidth + 16
           const internsHeight = scaleY(item.interns)
           const completionHeight = scaleY(item.completion)
@@ -5290,14 +5847,23 @@ function BarComparisonChart() {
   )
 }
 
-function DonutChart() {
-  const total = taskMix.reduce((sum, entry) => sum + entry.value, 0)
+function DonutChart({
+  completion,
+  data,
+}: {
+  completion: number
+  data: Array<{ color: string; name: string; value: number }>
+}) {
+  const visibleData = data.some((entry) => entry.value > 0)
+    ? data
+    : [{ color: '#97a3b6', name: 'No tasks', value: 1 }]
+  const total = visibleData.reduce((sum, entry) => sum + entry.value, 0)
   let cumulative = 0
 
   return (
     <svg aria-label="Task completion mix" className="donut-chart" role="img" viewBox="0 0 220 220">
       <circle className="donut-bg" cx="110" cy="110" r="74" />
-      {taskMix.map((entry) => {
+      {visibleData.map((entry) => {
         const ratio = entry.value / total
         const dashArray = `${ratio * 465} 465`
         const dashOffset = -cumulative * 465
@@ -5316,7 +5882,7 @@ function DonutChart() {
         )
       })}
       <text className="donut-number" textAnchor="middle" x="110" y="104">
-        81%
+        {completion}%
       </text>
       <text className="donut-label" textAnchor="middle" x="110" y="128">
         complete

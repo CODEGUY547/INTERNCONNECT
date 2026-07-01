@@ -841,16 +841,14 @@ const reportsForViewer = (user) => {
   if (user.role === 'companySupervisor') {
     return store.reports.filter(
       (report) =>
-        sameCredential(report.company, user.organization) &&
-        report.status === 'Pending company approval',
+        sameCredential(report.company, user.organization),
     )
   }
 
   if (user.role === 'universitySupervisor') {
     return store.reports.filter(
       (report) =>
-        sameCredential(report.university, user.organization) &&
-        report.status === 'Pending university approval',
+        sameCredential(report.university, user.organization),
     )
   }
 
@@ -912,8 +910,8 @@ const createReportRecord = (body, user) => {
     status: 'Pending company approval',
     studentNo,
     submitted: new Date().toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' }),
-    title: String(body.title ?? `Internship report ${periodStart} to ${periodEnd}`).trim(),
-    type: 'Weekly report',
+    title: String(body.title ?? `Daily internship report ${periodEnd}`).trim(),
+    type: 'Daily report',
     university,
     universityApprovedAt: null,
     universityApprovedBy: null,
@@ -984,12 +982,33 @@ const tasksForViewer = (user) => {
     return store.tasks.filter((task) => sameCredential(task.intern, user.name) || sameCredential(task.studentNo, user.loginId))
   }
   if (user.role === 'companySupervisor') {
-    const assignedInterns = placementsWithApprovedInterns()
+    const assignedPlacements = placementsWithApprovedInterns()
       .filter((placement) => sameCredential(placement.company, user.organization))
-      .map((placement) => placement.name)
-    return store.tasks.filter((task) => assignedInterns.some((name) => sameCredential(task.intern, name)))
+    return store.tasks.filter((task) =>
+      assignedPlacements.some(
+        (placement) =>
+          sameCredential(task.studentNo, placement.studentNo) ||
+          sameCredential(task.intern, placement.name) ||
+          sameCredential(task.company, placement.company),
+      ),
+    )
   }
   return []
+}
+
+const canManageTask = (user, task) => {
+  if (!user || !task) return false
+  if (user.role === 'admin') return true
+  if (user.role === 'intern') {
+    return sameCredential(task.studentNo, user.loginId) || sameCredential(task.intern, user.name)
+  }
+  if (user.role === 'companySupervisor') {
+    const placement =
+      placementForStudent(task.studentNo) ??
+      placementsWithApprovedInterns().find((item) => sameCredential(item.name, task.intern))
+    return Boolean(placement && canAccessPlacement(user, placement))
+  }
+  return false
 }
 
 const announcementsForViewer = (user) =>
@@ -1428,26 +1447,69 @@ const server = http.createServer(async (req, res) => {
         json(res, 422, { error: 'Task title is required' })
         return
       }
+      const placement =
+        placementForStudent(body.studentNo) ??
+        placementsWithApprovedInterns().find((item) => sameCredential(item.name, body.intern))
+      if (!placement) {
+        json(res, 422, { error: 'Select an assigned intern before creating the task.' })
+        return
+      }
+      if (user.role === 'companySupervisor' && !canAccessPlacement(user, placement)) {
+        json(res, 403, { error: 'You can only assign tasks to interns at your company.' })
+        return
+      }
       const task = {
-        attachments: Number(body.attachments ?? 0),
+        attachments: Math.max(0, Number(body.attachments ?? 0) || 0),
+        company: placement.company,
         deadline: body.deadline ?? 'Jul 05',
-        intern: body.intern ?? 'Unassigned intern',
+        id: `TASK-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        intern: placement.name,
         priority: body.priority ?? 'Medium',
-        progress: Number(body.progress ?? 0),
+        progress: clampScore(body.progress ?? 0),
+        studentNo: placement.studentNo,
         status: body.status ?? 'Pending',
         title,
-      }
-      if (user.role === 'companySupervisor') {
-        const placement = placementsWithApprovedInterns().find((item) => sameCredential(item.name, task.intern))
-        if (!placement || !canAccessPlacement(user, placement)) {
-          json(res, 403, { error: 'You can only assign tasks to interns at your company.' })
-          return
-        }
+        university: placement.university,
       }
       store.tasks.unshift(task)
       await saveData()
       await audit('task.created', user, { intern: task.intern, title: task.title })
       json(res, 201, { task })
+      return
+    }
+
+    const taskUpdateMatch = pathMatch(url.pathname, /^\/api\/tasks\/([^/]+)$/)
+    if (req.method === 'PATCH' && taskUpdateMatch) {
+      const user = requireUser(req, res, ['admin', 'intern', 'companySupervisor'])
+      if (!user) return
+      const taskKey = decodeURIComponent(taskUpdateMatch[1])
+      const task = store.tasks.find((item) => sameCredential(item.id, taskKey) || sameCredential(item.title, taskKey))
+      if (!task) {
+        json(res, 404, { error: 'Task not found' })
+        return
+      }
+      if (!canManageTask(user, task)) {
+        json(res, 403, { error: 'You are not allowed to update this task.' })
+        return
+      }
+
+      const body = await readBody(req)
+      const allowedStatuses = new Set(['Pending', 'In Progress', 'Completed', 'Overdue', 'Rejected'])
+      if (allowedStatuses.has(body.status)) {
+        task.status = body.status
+      }
+      if (body.progress !== undefined) {
+        task.progress = clampScore(body.progress)
+      } else if (task.status === 'Completed') {
+        task.progress = 100
+      } else if (task.status === 'In Progress') {
+        task.progress = Math.max(Number(task.progress ?? 0), 50)
+      }
+
+      if (!task.id) task.id = `TASK-${Date.now()}-${Math.floor(Math.random() * 1000)}`
+      await saveData()
+      await audit('task.updated', user, { status: task.status, taskId: task.id, title: task.title })
+      json(res, 200, { task })
       return
     }
 

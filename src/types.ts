@@ -63,6 +63,8 @@ export interface AttendanceRecord {
 }
 
 export interface TaskRecord {
+  company?: string
+  id?: string
   title: string
   intern: string
   priority: 'High' | 'Medium' | 'Low'
@@ -70,6 +72,8 @@ export interface TaskRecord {
   status: 'Pending' | 'In Progress' | 'Completed' | 'Overdue' | 'Rejected'
   progress: number
   attachments: number
+  studentNo?: string
+  university?: string
 }
 
 export interface ReportRecord {
@@ -88,7 +92,7 @@ export interface ReportRecord {
   status: 'Pending company approval' | 'Pending university approval' | 'Approved' | 'Corrections requested' | 'Rejected'
   studentNo?: string
   reviewer: string
-  type: 'Weekly report' | 'Evaluation' | 'Attendance'
+  type: 'Daily report' | 'Weekly report' | 'Evaluation' | 'Attendance'
   university?: string
   universityApprovedAt?: string
   universityApprovedBy?: string
