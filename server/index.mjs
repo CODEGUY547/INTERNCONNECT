@@ -1013,10 +1013,13 @@ const canManageTask = (user, task) => {
 
 const cleanTaskText = (value, limit = 1500) => String(value ?? '').trim().slice(0, limit)
 
+const taskIsAwaitingCompanyApproval = (task) =>
+  task.status === 'Submitted' ||
+  (Boolean(task.submittedAt) && !task.reviewedAt && ['In Progress', 'Overdue'].includes(task.status))
+
 const taskProgressForStatus = (task, status) => {
   if (status === 'Completed') return 100
-  if (status === 'Submitted') return Math.max(Number(task.progress ?? 0), 90)
-  if (status === 'Needs correction' || status === 'Rejected') return Math.max(Number(task.progress ?? 0), 65)
+  if (status === 'Rejected' || status === 'Needs correction') return Math.max(Number(task.progress ?? 0), 65)
   if (status === 'In Progress') return Math.max(Number(task.progress ?? 0), 50)
   return Number(task.progress ?? 0)
 }
@@ -1505,20 +1508,27 @@ const server = http.createServer(async (req, res) => {
 
       const body = await readBody(req)
       const requestedStatus = cleanTaskText(body.status, 40)
-      const allowedStatuses = new Set(['Pending', 'In Progress', 'Submitted', 'Needs correction', 'Completed', 'Overdue', 'Rejected'])
+      const requestedAction = cleanTaskText(body.action, 40)
+      const allowedStatuses = new Set(['Pending', 'In Progress', 'Completed', 'Overdue', 'Rejected'])
       if (!allowedStatuses.has(requestedStatus)) {
         json(res, 422, { error: 'Choose a valid task status.' })
         return
       }
 
       if (user.role === 'intern') {
+        const awaitingApproval = taskIsAwaitingCompanyApproval(task)
         const internCanStart =
-          requestedStatus === 'In Progress' && ['Pending', 'Needs correction', 'Rejected'].includes(task.status)
+          requestedAction !== 'submit' &&
+          requestedStatus === 'In Progress' &&
+          ['Pending', 'Rejected', 'Needs correction'].includes(task.status)
         const internCanSubmit =
-          requestedStatus === 'Submitted' && ['In Progress', 'Overdue', 'Needs correction', 'Rejected'].includes(task.status)
+          requestedAction === 'submit' &&
+          requestedStatus === 'In Progress' &&
+          !awaitingApproval &&
+          ['In Progress', 'Overdue', 'Rejected', 'Needs correction'].includes(task.status)
 
         if (!internCanStart && !internCanSubmit) {
-          json(res, 403, { error: 'Interns can only start tasks or submit them for supervisor review.' })
+          json(res, 403, { error: 'Interns can only start tasks or submit work summaries for company supervisor approval.' })
           return
         }
 
@@ -1532,35 +1542,35 @@ const server = http.createServer(async (req, res) => {
           task.submissionNote = submissionNote
           task.attachments = 0
           task.submittedAt = new Date().toLocaleString()
+          task.status = 'In Progress'
+          task.progress = Math.max(Number(task.progress ?? 0), 90)
           delete task.evidenceUrl
           delete task.reviewComment
           delete task.reviewedAt
           delete task.reviewedBy
+        } else {
+          task.status = requestedStatus
+          task.progress = clampScore(taskProgressForStatus(task, requestedStatus))
         }
       } else {
+        const awaitingApproval = taskIsAwaitingCompanyApproval(task)
         const supervisorCanReview =
           ['admin', 'companySupervisor'].includes(user.role) &&
-          ['Completed', 'Needs correction', 'Rejected'].includes(requestedStatus) &&
-          task.status === 'Submitted'
+          ['Completed', 'Rejected'].includes(requestedStatus) &&
+          awaitingApproval
 
         if (!supervisorCanReview) {
-          json(res, 403, { error: 'Supervisors can only approve or return submitted tasks.' })
+          json(res, 403, { error: 'Supervisors can only approve or reject submitted work summaries.' })
           return
         }
 
         const reviewComment = cleanTaskText(body.reviewComment, 1000)
-        if (['Needs correction', 'Rejected'].includes(requestedStatus) && !reviewComment) {
-          json(res, 422, { error: 'Add a review comment before returning the task.' })
-          return
-        }
-
         task.reviewComment = reviewComment
         task.reviewedAt = new Date().toLocaleString()
         task.reviewedBy = user.name
+        task.status = requestedStatus
+        task.progress = clampScore(taskProgressForStatus(task, requestedStatus))
       }
-
-      task.status = requestedStatus
-      task.progress = clampScore(taskProgressForStatus(task, requestedStatus))
 
       if (!task.id) task.id = `TASK-${Date.now()}-${Math.floor(Math.random() * 1000)}`
       await saveData()

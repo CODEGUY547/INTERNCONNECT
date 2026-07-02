@@ -684,6 +684,16 @@ const taskBelongsToPlacement = (task: TaskRecord, placement: InternRecord) =>
   sameCredential(task.studentNo ?? '', placement.studentNo) ||
   samePersonName(task.intern ?? '', placement.name)
 
+const taskAwaitingCompanyApproval = (task: TaskRecord) =>
+  task.status === 'Submitted' ||
+  (Boolean(task.submittedAt) && !task.reviewedAt && ['In Progress', 'Overdue'].includes(task.status))
+
+const taskBoardStatus = (task: TaskRecord): TaskRecord['status'] => {
+  if (taskAwaitingCompanyApproval(task)) return 'In Progress'
+  if (task.status === 'Needs correction') return 'Rejected'
+  return task.status
+}
+
 const evaluationBelongsToSession = (evaluation: ManualEvaluationRecord, session: LoginSession) =>
   sameCredential(evaluation.studentNo, session.loginId) || samePersonName(evaluation.internName, session.name)
 
@@ -830,8 +840,7 @@ const buildDepartmentStats = (placements: InternRecord[], tasks: TaskRecord[]) =
 
 const buildTaskMix = (tasks: TaskRecord[]) => [
   { color: '#2f9e73', name: 'Completed', value: tasks.filter((task) => task.status === 'Completed').length },
-  { color: '#2f6fbb', name: 'In progress', value: tasks.filter((task) => task.status === 'In Progress').length },
-  { color: '#7c5cff', name: 'Submitted', value: tasks.filter((task) => task.status === 'Submitted').length },
+  { color: '#2f6fbb', name: 'In progress', value: tasks.filter((task) => taskBoardStatus(task) === 'In Progress').length },
   { color: '#d89a25', name: 'Pending', value: tasks.filter((task) => task.status === 'Pending').length },
   { color: '#d9534f', name: 'Overdue', value: tasks.filter((task) => task.status === 'Overdue').length },
 ]
@@ -1483,22 +1492,25 @@ function App() {
 
     taskItems
       .filter((task) => {
+        const visibleStatus = taskBoardStatus(task)
         if (role === 'intern') {
-          return currentInternTask(task) && ['Pending', 'Overdue', 'Needs correction', 'Rejected', 'Completed'].includes(task.status)
+          return currentInternTask(task) && ['Pending', 'Overdue', 'Rejected', 'Completed'].includes(visibleStatus)
         }
         if (role === 'companySupervisor') {
-          return sameCredential(task.company ?? '', session?.organization ?? '') && ['Submitted', 'Overdue'].includes(task.status)
+          return sameCredential(task.company ?? '', session?.organization ?? '') && (taskAwaitingCompanyApproval(task) || task.status === 'Overdue')
         }
-        if (role === 'admin') return ['Submitted', 'Overdue'].includes(task.status)
+        if (role === 'admin') return taskAwaitingCompanyApproval(task) || task.status === 'Overdue'
 
         return false
       })
       .slice(0, role === 'intern' ? 8 : 3)
       .forEach((task) => {
+        const awaitingApproval = taskAwaitingCompanyApproval(task)
+        const visibleStatus = taskBoardStatus(task)
         const internTaskTone =
-          task.status === 'Overdue' || task.status === 'Needs correction' || task.status === 'Rejected'
+          task.status === 'Overdue' || visibleStatus === 'Rejected'
             ? 'red'
-            : task.status === 'Completed'
+            : visibleStatus === 'Completed'
               ? 'green'
               : task.priority === 'High'
                 ? 'amber'
@@ -1507,12 +1519,12 @@ function App() {
                   : 'blue'
         const taskDescription =
           role === 'intern'
-            ? task.status === 'Completed'
+            ? visibleStatus === 'Completed'
               ? `${task.title} was approved by ${task.reviewedBy ?? 'your supervisor'}.`
-              : task.status === 'Needs correction' || task.status === 'Rejected'
-                ? `${task.title} needs updates before it can be approved.`
-                : `Supervisor assigned: ${task.title}. Due ${task.deadline}. Status: ${task.status}.`
-            : task.status === 'Submitted'
+              : visibleStatus === 'Rejected'
+                ? `${task.title} was rejected. Update the work summary and submit again.`
+                : `Supervisor assigned: ${task.title}. Due ${task.deadline}. Status: ${visibleStatus}.`
+            : awaitingApproval
               ? `${task.intern} submitted ${task.title} for company supervisor approval.`
               : `${task.intern} has an overdue task due ${task.deadline}.`
         items.push({
@@ -1522,8 +1534,8 @@ function App() {
           id: `task-${task.id ?? task.studentNo ?? task.intern}-${task.title}`,
           onAction: () => setActiveView('tasks'),
           time: task.deadline,
-          title: role === 'intern' ? `Task ${task.status.toLowerCase()}: ${task.title}` : task.status === 'Submitted' ? 'Task waiting for approval' : task.title,
-          tone: role === 'intern' ? internTaskTone : task.status === 'Submitted' ? 'blue' : 'red',
+          title: role === 'intern' ? `Task ${visibleStatus.toLowerCase()}: ${task.title}` : awaitingApproval ? 'Task waiting for approval' : task.title,
+          tone: role === 'intern' ? internTaskTone : awaitingApproval ? 'blue' : 'red',
         })
       })
 
@@ -3244,7 +3256,7 @@ function TasksView({
   setTaskItems: Dispatch<SetStateAction<TaskRecord[]>>
   taskItems: TaskRecord[]
 }) {
-  const lanes: TaskRecord['status'][] = ['Pending', 'In Progress', 'Submitted', 'Needs correction', 'Completed', 'Overdue', 'Rejected']
+  const lanes: TaskRecord['status'][] = ['Pending', 'In Progress', 'Completed', 'Overdue', 'Rejected']
   const [composerOpen, setComposerOpen] = useState(false)
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, string>>({})
   const [submissionDrafts, setSubmissionDrafts] = useState<Record<string, string>>({})
@@ -3268,8 +3280,7 @@ function TasksView({
   const getTaskDraftKey = (task: TaskRecord) => task.id ?? `${task.studentNo ?? task.intern}-${task.title}`
   const taskProgressForStatus = (task: TaskRecord, status: TaskRecord['status']) => {
     if (status === 'Completed') return 100
-    if (status === 'Submitted') return Math.max(Number(task.progress ?? 0), 90)
-    if (status === 'Needs correction' || status === 'Rejected') return Math.max(Number(task.progress ?? 0), 65)
+    if (status === 'Rejected') return Math.max(Number(task.progress ?? 0), 65)
     if (status === 'In Progress') return Math.max(Number(task.progress ?? 0), 50)
     return Number(task.progress ?? 0)
   }
@@ -3350,7 +3361,7 @@ function TasksView({
     triggerToast('Task created and added to Pending')
   }
 
-  const patchTask = async (task: TaskRecord, body: Partial<TaskRecord>, successMessage: string) => {
+  const patchTask = async (task: TaskRecord, body: Partial<TaskRecord> & Record<string, unknown>, successMessage: string) => {
     const taskKey = task.id ?? task.title
     try {
       const payload = await apiJson<{ task: TaskRecord }>(`/api/tasks/${encodeURIComponent(taskKey)}`, {
@@ -3388,8 +3399,9 @@ function TasksView({
       task,
       {
         attachments: 0,
-        progress: taskProgressForStatus(task, 'Submitted'),
-        status: 'Submitted',
+        action: 'submit',
+        progress: Math.max(Number(task.progress ?? 0), 90),
+        status: 'In Progress',
         submissionNote,
       },
       'Task sent to company supervisor for approval',
@@ -3403,13 +3415,9 @@ function TasksView({
     }
   }
 
-  const reviewTask = async (task: TaskRecord, status: 'Completed' | 'Needs correction') => {
+  const reviewTask = async (task: TaskRecord, status: 'Completed' | 'Rejected') => {
     const taskKey = getTaskDraftKey(task)
     const reviewComment = (reviewDrafts[taskKey] ?? '').trim()
-    if (status === 'Needs correction' && !reviewComment) {
-      triggerToast('Add a correction note for the intern')
-      return
-    }
 
     const updatedTask = await patchTask(
       task,
@@ -3418,7 +3426,7 @@ function TasksView({
         reviewComment,
         status,
       },
-      status === 'Completed' ? 'Task approved; intern will see it under Completed' : 'Task returned to intern for corrections',
+      status === 'Completed' ? 'Task approved; intern will see it under Completed' : 'Task rejected; intern can submit again',
     )
     if (updatedTask) {
       setReviewDrafts((current) => {
@@ -3518,16 +3526,20 @@ function TasksView({
           <section className="lane" key={lane}>
             <div className="lane-header">
               <h3>{lane}</h3>
-              <span>{visibleTaskItems.filter((task) => task.status === lane).length}</span>
+              <span>{visibleTaskItems.filter((task) => taskBoardStatus(task) === lane).length}</span>
             </div>
             {visibleTaskItems
-              .filter((task) => task.status === lane)
+              .filter((task) => taskBoardStatus(task) === lane)
               .map((task) => {
                 const taskKey = getTaskDraftKey(task)
                 const submissionDraft = submissionDrafts[taskKey] ?? ''
                 const reviewDraft = reviewDrafts[taskKey] ?? ''
-                const canSubmitTask = role === 'intern' && ['In Progress', 'Overdue', 'Needs correction', 'Rejected'].includes(task.status)
-                const canReviewTask = ['admin', 'companySupervisor'].includes(role) && task.status === 'Submitted'
+                const awaitingApproval = taskAwaitingCompanyApproval(task)
+                const canSubmitTask =
+                  role === 'intern' &&
+                  !awaitingApproval &&
+                  ['In Progress', 'Overdue', 'Needs correction', 'Rejected'].includes(task.status)
+                const canReviewTask = ['admin', 'companySupervisor'].includes(role) && awaitingApproval
 
                 return (
                   <article className="task-card" key={task.id ?? task.title}>
@@ -3547,7 +3559,7 @@ function TasksView({
                     </div>
                     {task.submissionNote && (
                       <div className="task-note">
-                        <strong>Submitted work</strong>
+                        <strong>Work summary</strong>
                         <span>{task.submissionNote}</span>
                         {task.submittedAt && <small>{task.submittedAt}</small>}
                       </div>
@@ -3588,7 +3600,7 @@ function TasksView({
                                 [taskKey]: event.target.value,
                               }))
                             }
-                            placeholder="Comment for the intern"
+                            placeholder="Optional note for the intern"
                             rows={3}
                             value={reviewDraft}
                           />
@@ -3608,7 +3620,7 @@ function TasksView({
                           <span>Submit for review</span>
                         </button>
                       )}
-                      {role === 'intern' && task.status === 'Submitted' && (
+                      {role === 'intern' && awaitingApproval && (
                         <span className="task-state-note">Waiting for company supervisor approval</span>
                       )}
                       {canReviewTask && (
@@ -3617,9 +3629,9 @@ function TasksView({
                             <CheckCircle2 size={15} aria-hidden="true" />
                             <span>Approve</span>
                           </button>
-                          <button className="secondary-button" onClick={() => reviewTask(task, 'Needs correction')} type="button">
+                          <button className="secondary-button" onClick={() => reviewTask(task, 'Rejected')} type="button">
                             <AlertTriangle size={15} aria-hidden="true" />
-                            <span>Request correction</span>
+                            <span>Reject</span>
                           </button>
                         </>
                       )}
@@ -3627,7 +3639,7 @@ function TasksView({
                   </article>
                 )
               })}
-            {visibleTaskItems.filter((task) => task.status === lane).length === 0 && (
+            {visibleTaskItems.filter((task) => taskBoardStatus(task) === lane).length === 0 && (
               <div className="lane-empty">
                 <span>No {lane.toLowerCase()} tasks</span>
               </div>
