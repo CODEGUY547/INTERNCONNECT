@@ -1537,6 +1537,108 @@ th {
   color: var(--muted);
 }
 
+.task-supervisor-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.task-supervisor-metrics article {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 14px;
+}
+
+.task-supervisor-metrics span,
+.task-supervisor-metrics small,
+.review-meta,
+.supervisor-task-row > span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.task-supervisor-metrics strong {
+  font-size: 1.8rem;
+}
+
+.review-queue {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.review-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 14px;
+}
+
+.review-card-header,
+.review-meta,
+.supervisor-task-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.review-card-header {
+  justify-content: space-between;
+}
+
+.review-card-header span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.review-card-header h3 {
+  font-size: 1rem;
+}
+
+.review-meta {
+  flex-wrap: wrap;
+}
+
+.review-comment-box {
+  display: grid;
+  gap: 6px;
+}
+
+.review-comment-box textarea {
+  min-height: 84px;
+  resize: vertical;
+}
+
+.supervisor-task-list {
+  display: grid;
+  gap: 10px;
+}
+
+.supervisor-task-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) auto minmax(84px, 0.5fr) minmax(120px, 0.8fr);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: 12px;
+}
+
+.supervisor-task-row > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.supervisor-task-row > div:first-child span {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
 .task-note,
 .task-submission {
   display: grid;
@@ -2348,6 +2450,7 @@ th {
   .calendar-grid,
   .security-grid,
   .placement-summary-grid,
+  .task-supervisor-metrics,
   .access-level-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2412,6 +2515,10 @@ th {
   .verification-map {
     grid-template-columns: 1fr;
   }
+
+  .supervisor-task-row {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 @media (max-width: 640px) {
@@ -2453,6 +2560,11 @@ th {
 
   .topbar {
     position: static;
+  }
+
+  .task-supervisor-metrics,
+  .supervisor-task-row {
+    grid-template-columns: 1fr;
   }
 
   .top-actions,

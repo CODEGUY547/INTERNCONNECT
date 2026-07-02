@@ -519,9 +519,18 @@ const statusTone = (status: string): StatusTone => {
   }
 
   if (
-    ['Late', 'Pending', 'Pending review', 'Pending company approval', 'In Progress', 'In review', 'Medium', 'Open', 'Submitted'].includes(
-      status,
-    )
+    [
+      'Late',
+      'Pending',
+      'Pending review',
+      'Pending company approval',
+      'In Progress',
+      'In review',
+      'Medium',
+      'Open',
+      'Submitted',
+      'Waiting approval',
+    ].includes(status)
   ) {
     return 'amber'
   }
@@ -1380,6 +1389,13 @@ function App() {
     const items: NotificationItem[] = []
     const currentInternTask = (task: TaskRecord) =>
       session ? taskBelongsToSession(task, session) : false
+    const taskBelongsToSupervisorOrganization = (task: TaskRecord) =>
+      sameCredential(task.company ?? '', session?.organization ?? '') ||
+      livePlacementItems.some(
+        (placement) =>
+          sameCredential(placement.company, session?.organization ?? '') &&
+          taskBelongsToPlacement(task, placement),
+      )
     const announcementVisibleToRole = (audience: string) => {
       const normalizedAudience = audience.trim().toLowerCase()
       if (role === 'admin') return true
@@ -1497,13 +1513,13 @@ function App() {
           return currentInternTask(task) && ['Pending', 'Overdue', 'Rejected', 'Completed'].includes(visibleStatus)
         }
         if (role === 'companySupervisor') {
-          return sameCredential(task.company ?? '', session?.organization ?? '') && (taskAwaitingCompanyApproval(task) || task.status === 'Overdue')
+          return taskBelongsToSupervisorOrganization(task) && (taskAwaitingCompanyApproval(task) || task.status === 'Overdue')
         }
         if (role === 'admin') return taskAwaitingCompanyApproval(task) || task.status === 'Overdue'
 
         return false
       })
-      .slice(0, role === 'intern' ? 8 : 3)
+      .slice(0, role === 'intern' || role === 'companySupervisor' ? 8 : 5)
       .forEach((task) => {
         const awaitingApproval = taskAwaitingCompanyApproval(task)
         const visibleStatus = taskBoardStatus(task)
@@ -1528,12 +1544,12 @@ function App() {
               ? `${task.intern} submitted ${task.title} for company supervisor approval.`
               : `${task.intern} has an overdue task due ${task.deadline}.`
         items.push({
-          actionLabel: 'Open tasks',
-          category: 'Task',
+          actionLabel: awaitingApproval ? 'Review work' : 'Open tasks',
+          category: awaitingApproval ? 'Task review' : role === 'intern' && ['Completed', 'Rejected'].includes(visibleStatus) ? 'Task result' : 'Task',
           description: taskDescription,
           id: `task-${task.id ?? task.studentNo ?? task.intern}-${task.title}`,
           onAction: () => setActiveView('tasks'),
-          time: task.deadline,
+          time: awaitingApproval ? task.submittedAt ?? task.deadline : ['Completed', 'Rejected'].includes(visibleStatus) ? task.reviewedAt ?? task.deadline : task.deadline,
           title: role === 'intern' ? `Task ${visibleStatus.toLowerCase()}: ${task.title}` : awaitingApproval ? 'Task waiting for approval' : task.title,
           tone: role === 'intern' ? internTaskTone : awaitingApproval ? 'blue' : 'red',
         })
@@ -1556,6 +1572,7 @@ function App() {
     announcements,
     attendanceEvents,
     complaintItems,
+    livePlacementItems,
     reportItems,
     role,
     session?.loginId,
@@ -3268,7 +3285,11 @@ function TasksView({
     role === 'intern'
       ? taskItems.filter((task) => taskBelongsToSession(task, session))
       : role === 'companySupervisor'
-        ? taskItems.filter((task) => sameCredential(task.company ?? '', session.organization))
+        ? taskItems.filter(
+            (task) =>
+              sameCredential(task.company ?? '', session.organization) ||
+              assignablePlacements.some((placement) => taskBelongsToPlacement(task, placement)),
+          )
       : taskItems
   const [taskDraft, setTaskDraft] = useState({
     deadline: 'Jul 05',
@@ -3435,6 +3456,210 @@ function TasksView({
         return next
       })
     }
+  }
+
+  if (role === 'companySupervisor') {
+    const reviewTasks = visibleTaskItems.filter((task) => taskAwaitingCompanyApproval(task))
+    const activeTasks = visibleTaskItems.filter(
+      (task) => !taskAwaitingCompanyApproval(task) && ['Pending', 'In Progress', 'Overdue'].includes(taskBoardStatus(task)),
+    )
+    const completedTasks = visibleTaskItems.filter((task) => task.status === 'Completed')
+    const rejectedTasks = visibleTaskItems.filter((task) => taskBoardStatus(task) === 'Rejected')
+
+    return (
+      <div className="module-stack">
+        <div className="module-header">
+          <div>
+            <span className="eyebrow-text">Review queue, assignments, approval decisions</span>
+            <h2>Company task approvals</h2>
+          </div>
+          <button className="primary-button" onClick={() => setComposerOpen((value) => !value)} type="button">
+            <Plus size={17} aria-hidden="true" />
+            <span>New task</span>
+          </button>
+        </div>
+
+        {composerOpen && (
+          <section className="panel">
+            <PanelHeader icon={Plus} title="Create task" />
+            <div className="form-grid">
+              <label>
+                <span>Task title</span>
+                <input
+                  onChange={(event) => setTaskDraft((current) => ({ ...current, title: event.target.value }))}
+                  placeholder="Enter task title"
+                  value={taskDraft.title}
+                />
+              </label>
+              <label>
+                <span>Intern</span>
+                <select
+                  onChange={(event) => {
+                    const placement = assignablePlacements.find((item) => sameCredential(item.studentNo, event.target.value))
+                    setTaskDraft((current) => ({
+                      ...current,
+                      intern: placement?.name ?? '',
+                      studentNo: placement?.studentNo ?? '',
+                    }))
+                  }}
+                  value={taskDraft.studentNo}
+                >
+                  {assignablePlacements.length === 0 ? (
+                    <option value="">No assigned interns</option>
+                  ) : (
+                    assignablePlacements.map((placement) => (
+                      <option key={placement.studentNo} value={placement.studentNo}>
+                        {placement.name} ({placement.studentNo})
+                      </option>
+                    ))
+                  )}
+                </select>
+              </label>
+              <label>
+                <span>Deadline</span>
+                <input
+                  onChange={(event) => setTaskDraft((current) => ({ ...current, deadline: event.target.value }))}
+                  value={taskDraft.deadline}
+                />
+              </label>
+              <label>
+                <span>Priority</span>
+                <select
+                  onChange={(event) =>
+                    setTaskDraft((current) => ({ ...current, priority: event.target.value as TaskRecord['priority'] }))
+                  }
+                  value={taskDraft.priority}
+                >
+                  <option>High</option>
+                  <option>Medium</option>
+                  <option>Low</option>
+                </select>
+              </label>
+            </div>
+            <div className="button-row">
+              <button className="primary-button" onClick={createTask} type="button">
+                <CheckCircle2 size={16} aria-hidden="true" />
+                <span>Create task</span>
+              </button>
+              <button className="secondary-button" onClick={() => setComposerOpen(false)} type="button">
+                Cancel
+              </button>
+            </div>
+          </section>
+        )}
+
+        <div className="task-supervisor-metrics">
+          <article>
+            <span>Waiting approval</span>
+            <strong>{reviewTasks.length}</strong>
+            <small>Submitted summaries</small>
+          </article>
+          <article>
+            <span>Active work</span>
+            <strong>{activeTasks.length}</strong>
+            <small>Pending or in progress</small>
+          </article>
+          <article>
+            <span>Completed</span>
+            <strong>{completedTasks.length}</strong>
+            <small>Approved tasks</small>
+          </article>
+          <article>
+            <span>Rejected</span>
+            <strong>{rejectedTasks.length}</strong>
+            <small>Sent back to interns</small>
+          </article>
+        </div>
+
+        <section className="panel supervisor-review-panel">
+          <PanelHeader icon={ClipboardCheck} title="Work summaries waiting for approval" />
+          {reviewTasks.length === 0 ? (
+            <div className="lane-empty">
+              <span>No submitted work summaries waiting for approval</span>
+            </div>
+          ) : (
+            <div className="review-queue">
+              {reviewTasks.map((task) => {
+                const taskKey = getTaskDraftKey(task)
+                const reviewDraft = reviewDrafts[taskKey] ?? ''
+
+                return (
+                  <article className="review-card" key={task.id ?? task.title}>
+                    <div className="review-card-header">
+                      <div>
+                        <span>{task.intern}</span>
+                        <h3>{task.title}</h3>
+                      </div>
+                      <StatusPill status={task.priority} />
+                    </div>
+                    <div className="review-meta">
+                      <span>Due {task.deadline}</span>
+                      {task.submittedAt && <span>Submitted {task.submittedAt}</span>}
+                    </div>
+                    <div className="task-note">
+                      <strong>Work summary</strong>
+                      <span>{task.submissionNote ?? 'No summary provided'}</span>
+                    </div>
+                    <label className="review-comment-box">
+                      <span>Review comment</span>
+                      <textarea
+                        onChange={(event) =>
+                          setReviewDrafts((current) => ({
+                            ...current,
+                            [taskKey]: event.target.value,
+                          }))
+                        }
+                        placeholder="Optional note for the intern"
+                        rows={3}
+                        value={reviewDraft}
+                      />
+                    </label>
+                    <div className="task-actions">
+                      <button className="primary-button" onClick={() => reviewTask(task, 'Completed')} type="button">
+                        <CheckCircle2 size={15} aria-hidden="true" />
+                        <span>Approve</span>
+                      </button>
+                      <button className="secondary-button" onClick={() => reviewTask(task, 'Rejected')} type="button">
+                        <AlertTriangle size={15} aria-hidden="true" />
+                        <span>Reject</span>
+                      </button>
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
+          )}
+        </section>
+
+        <section className="panel">
+          <PanelHeader icon={ClipboardList} title="Assigned task progress" />
+          {visibleTaskItems.length === 0 ? (
+            <div className="lane-empty">
+              <span>No assigned tasks yet</span>
+            </div>
+          ) : (
+            <div className="supervisor-task-list">
+              {visibleTaskItems.map((task) => {
+                const awaitingApproval = taskAwaitingCompanyApproval(task)
+                const visibleStatus = awaitingApproval ? 'Waiting approval' : taskBoardStatus(task)
+
+                return (
+                  <article className="supervisor-task-row" key={task.id ?? `${task.intern}-${task.title}`}>
+                    <div>
+                      <strong>{task.title}</strong>
+                      <span>{task.intern}</span>
+                    </div>
+                    <StatusPill status={visibleStatus} />
+                    <span>{task.deadline}</span>
+                    <ProgressBar value={task.progress} />
+                  </article>
+                )
+              })}
+            </div>
+          )}
+        </section>
+      </div>
+    )
   }
 
   return (
