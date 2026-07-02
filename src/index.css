@@ -1474,6 +1474,49 @@ th {
   background: var(--amber);
 }
 
+.supervisor-overview-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.supervisor-overview-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 12px;
+}
+
+.supervisor-avatar {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--blue) 14%, var(--surface));
+  color: var(--blue);
+  font-weight: 900;
+}
+
+.supervisor-overview-card div:last-child {
+  display: grid;
+  gap: 3px;
+}
+
+.supervisor-overview-card span,
+.supervisor-overview-card small {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.analytics-metrics {
+  margin-top: 4px;
+}
+
 .kanban {
   display: grid;
   grid-template-columns: repeat(5, minmax(210px, 1fr));

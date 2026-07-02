@@ -854,6 +854,16 @@ const buildTaskMix = (tasks: TaskRecord[]) => [
   { color: '#d9534f', name: 'Overdue', value: tasks.filter((task) => task.status === 'Overdue').length },
 ]
 
+const roleLabel = (role: RoleId) => roles.find((item) => item.id === role)?.label ?? role
+
+const accountInitials = (name: string) =>
+  name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join('') || 'U'
+
 const buildInsights = (
   attendanceStats: ReturnType<typeof calculateAttendanceStats>,
   taskItems: TaskRecord[],
@@ -1101,6 +1111,8 @@ function App() {
     const taskCompletionRate = calculateTaskCompletionRate(visibleTasksForMetrics)
     const unresolvedComplaintCount = complaintItems.filter((complaint) => complaint.status !== 'Resolved').length
     const pendingReportCount = reportItems.filter((report) => !['Approved', 'Rejected'].includes(report.status)).length
+    const companySupervisorCount = approvedAccounts.filter((account) => account.role === 'companySupervisor').length
+    const universitySupervisorCount = approvedAccounts.filter((account) => account.role === 'universitySupervisor').length
     const companySupervisorPlacements = livePlacementItems.filter((placement) =>
       sameCredential(placement.company, sessionOrganization),
     )
@@ -1112,6 +1124,8 @@ function App() {
       admin: [
         { label: 'Total interns', value: String(livePlacementItems.length), delta: `${activePlacementCount} active now`, tone: 'blue' },
         { label: 'Active placements', value: String(activePlacementCount), delta: `${placementPercentage}% running`, tone: 'green' },
+        { label: 'Company supervisors', value: String(companySupervisorCount), delta: 'Approved company users', tone: 'amber' },
+        { label: 'University supervisors', value: String(universitySupervisorCount), delta: 'Approved university users', tone: 'violet' },
         { label: 'Attendance events', value: String(attendanceEvents.length), delta: 'Saved check-ins/out', tone: 'amber' },
         { label: 'Pending reports', value: String(pendingReportCount), delta: pendingReportCount ? 'Need review' : 'No pending reports', tone: 'violet' },
       ],
@@ -1156,6 +1170,7 @@ function App() {
     }
   }, [
     attendanceEvents.length,
+    approvedAccounts,
     complaintItems,
     currentAttendanceStats,
     currentEvaluationScore,
@@ -1762,6 +1777,7 @@ function App() {
         <section className="content">
           {activeView === 'overview' && (
             <OverviewDashboard
+              approvedAccounts={approvedAccounts}
               attendanceStats={currentAttendanceStats}
               checkedIn={role === 'intern' ? currentAttendanceStats.checkedInNow : checkedIn}
               insightItems={overviewInsights}
@@ -1810,8 +1826,12 @@ function App() {
           {activeView === 'analytics' && (
             <AnalyticsView
               attendanceEvents={attendanceEvents}
+              complaintItems={complaintItems}
+              manualEvaluations={manualEvaluationItems}
               placements={livePlacementItems}
               reportItems={reportItems}
+              role={role}
+              session={session}
               taskItems={taskItems}
             />
           )}
@@ -2438,6 +2458,7 @@ interface ViewProps {
 }
 
 function OverviewDashboard({
+  approvedAccounts,
   role,
   metrics,
   placements,
@@ -2449,6 +2470,7 @@ function OverviewDashboard({
   liveTick,
   programTrend,
 }: ViewProps & {
+  approvedAccounts: AppAccount[]
   attendanceStats: ReturnType<typeof calculateAttendanceStats>
   role: RoleId
   metrics: Metric[]
@@ -2461,6 +2483,9 @@ function OverviewDashboard({
 }) {
   const roleInfo = rolePanels[role]
   const overviewPlacement = placements.find((placement) => placement.status === 'Active') ?? placements[0]
+  const supervisorAccounts = approvedAccounts.filter((account) =>
+    ['companySupervisor', 'universitySupervisor'].includes(account.role),
+  )
   const exportDashboard = () => {
     const rows = metrics.map((metric) => `${metric.label},${metric.value},${metric.delta}`)
     downloadTextFile(
@@ -2494,6 +2519,37 @@ function OverviewDashboard({
             title="Active placements"
           />
           <PlacementTable compact placements={placements.slice(0, 6)} />
+        </section>
+      )}
+
+      {role === 'admin' && (
+        <section className="panel wide-panel">
+          <PanelHeader
+            actionIcon={ShieldCheck}
+            actionLabel="Manage users"
+            icon={UsersRound}
+            onAction={() => onNavigate('security')}
+            title="Company and university supervisors"
+          />
+          {supervisorAccounts.length === 0 ? (
+            <div className="empty-state">
+              <strong>No supervisors approved yet</strong>
+              <p>Approved company and university supervisors will appear here after account approval.</p>
+            </div>
+          ) : (
+            <div className="supervisor-overview-list">
+              {supervisorAccounts.slice(0, 8).map((account) => (
+                <article className="supervisor-overview-card" key={`${account.role}-${account.loginId}`}>
+                  <div className="supervisor-avatar">{accountInitials(account.name)}</div>
+                  <div>
+                    <strong>{account.name}</strong>
+                    <span>{roleLabel(account.role)}</span>
+                    <small>{account.organization}</small>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
       )}
 
@@ -3459,6 +3515,210 @@ function TasksView({
     }
   }
 
+  if (role === 'admin') {
+    const reviewTasks = visibleTaskItems.filter((task) => taskAwaitingCompanyApproval(task))
+    const completedTasks = visibleTaskItems.filter((task) => task.status === 'Completed')
+    const rejectedTasks = visibleTaskItems.filter((task) => taskBoardStatus(task) === 'Rejected')
+    const openTasks = visibleTaskItems.filter((task) => task.status !== 'Completed' && taskBoardStatus(task) !== 'Rejected')
+
+    return (
+      <div className="module-stack">
+        <div className="module-header">
+          <div>
+            <span className="eyebrow-text">System-wide task control, review queue, progress tracking</span>
+            <h2>Admin task command center</h2>
+          </div>
+          <button className="primary-button" onClick={() => setComposerOpen((value) => !value)} type="button">
+            <Plus size={17} aria-hidden="true" />
+            <span>New task</span>
+          </button>
+        </div>
+
+        {composerOpen && (
+          <section className="panel">
+            <PanelHeader icon={Plus} title="Create task" />
+            <div className="form-grid">
+              <label>
+                <span>Task title</span>
+                <input
+                  onChange={(event) => setTaskDraft((current) => ({ ...current, title: event.target.value }))}
+                  placeholder="Enter task title"
+                  value={taskDraft.title}
+                />
+              </label>
+              <label>
+                <span>Intern</span>
+                <select
+                  onChange={(event) => {
+                    const placement = assignablePlacements.find((item) => sameCredential(item.studentNo, event.target.value))
+                    setTaskDraft((current) => ({
+                      ...current,
+                      intern: placement?.name ?? '',
+                      studentNo: placement?.studentNo ?? '',
+                    }))
+                  }}
+                  value={taskDraft.studentNo}
+                >
+                  {assignablePlacements.length === 0 ? (
+                    <option value="">No assigned interns</option>
+                  ) : (
+                    assignablePlacements.map((placement) => (
+                      <option key={placement.studentNo} value={placement.studentNo}>
+                        {placement.name} ({placement.studentNo})
+                      </option>
+                    ))
+                  )}
+                </select>
+              </label>
+              <label>
+                <span>Deadline</span>
+                <input
+                  onChange={(event) => setTaskDraft((current) => ({ ...current, deadline: event.target.value }))}
+                  value={taskDraft.deadline}
+                />
+              </label>
+              <label>
+                <span>Priority</span>
+                <select
+                  onChange={(event) =>
+                    setTaskDraft((current) => ({ ...current, priority: event.target.value as TaskRecord['priority'] }))
+                  }
+                  value={taskDraft.priority}
+                >
+                  <option>High</option>
+                  <option>Medium</option>
+                  <option>Low</option>
+                </select>
+              </label>
+            </div>
+            <div className="button-row">
+              <button className="primary-button" onClick={createTask} type="button">
+                <CheckCircle2 size={16} aria-hidden="true" />
+                <span>Create task</span>
+              </button>
+              <button className="secondary-button" onClick={() => setComposerOpen(false)} type="button">
+                Cancel
+              </button>
+            </div>
+          </section>
+        )}
+
+        <div className="task-supervisor-metrics">
+          <article>
+            <span>Total tasks</span>
+            <strong>{visibleTaskItems.length}</strong>
+            <small>Across all placements</small>
+          </article>
+          <article>
+            <span>Waiting review</span>
+            <strong>{reviewTasks.length}</strong>
+            <small>Submitted summaries</small>
+          </article>
+          <article>
+            <span>Completed</span>
+            <strong>{completedTasks.length}</strong>
+            <small>Approved by supervisors/admin</small>
+          </article>
+          <article>
+            <span>Rejected</span>
+            <strong>{rejectedTasks.length}</strong>
+            <small>Returned to interns</small>
+          </article>
+        </div>
+
+        <section className="panel">
+          <PanelHeader icon={ClipboardCheck} title="Task review queue" />
+          {reviewTasks.length === 0 ? (
+            <div className="lane-empty">
+              <span>No work summaries waiting for approval</span>
+            </div>
+          ) : (
+            <div className="review-queue">
+              {reviewTasks.map((task) => {
+                const taskKey = getTaskDraftKey(task)
+                const reviewDraft = reviewDrafts[taskKey] ?? ''
+
+                return (
+                  <article className="review-card" key={task.id ?? task.title}>
+                    <div className="review-card-header">
+                      <div>
+                        <span>{task.company ?? 'Company not set'}</span>
+                        <h3>{task.title}</h3>
+                      </div>
+                      <StatusPill status={task.priority} />
+                    </div>
+                    <div className="review-meta">
+                      <span>{task.intern}</span>
+                      <span>Due {task.deadline}</span>
+                      {task.submittedAt && <span>Submitted {task.submittedAt}</span>}
+                    </div>
+                    <div className="task-note">
+                      <strong>Work summary</strong>
+                      <span>{task.submissionNote ?? 'No summary provided'}</span>
+                    </div>
+                    <label className="review-comment-box">
+                      <span>Review comment</span>
+                      <textarea
+                        onChange={(event) =>
+                          setReviewDrafts((current) => ({
+                            ...current,
+                            [taskKey]: event.target.value,
+                          }))
+                        }
+                        placeholder="Optional note for the intern"
+                        rows={3}
+                        value={reviewDraft}
+                      />
+                    </label>
+                    <div className="task-actions">
+                      <button className="primary-button" onClick={() => reviewTask(task, 'Completed')} type="button">
+                        <CheckCircle2 size={15} aria-hidden="true" />
+                        <span>Approve</span>
+                      </button>
+                      <button className="secondary-button" onClick={() => reviewTask(task, 'Rejected')} type="button">
+                        <AlertTriangle size={15} aria-hidden="true" />
+                        <span>Reject</span>
+                      </button>
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
+          )}
+        </section>
+
+        <DataTable
+          columns={['Task', 'Intern', 'Company', 'Deadline', 'Priority', 'Status', 'Progress']}
+          emptyMessage="No tasks have been created yet."
+          rows={visibleTaskItems}
+          renderRow={(task: TaskRecord) => {
+            const awaitingApproval = taskAwaitingCompanyApproval(task)
+            const visibleStatus = awaitingApproval ? 'Waiting approval' : taskBoardStatus(task)
+
+            return (
+              <>
+                <td>{task.title}</td>
+                <td>{task.intern}</td>
+                <td>{task.company ?? '-'}</td>
+                <td>{task.deadline}</td>
+                <td>
+                  <StatusPill status={task.priority} />
+                </td>
+                <td>
+                  <StatusPill status={visibleStatus} />
+                </td>
+                <td>
+                  <ProgressBar value={task.progress} />
+                </td>
+              </>
+            )
+          }}
+          title={`All tasks (${openTasks.length} open)`}
+        />
+      </div>
+    )
+  }
+
   if (role === 'companySupervisor') {
     const reviewTasks = visibleTaskItems.filter((task) => taskAwaitingCompanyApproval(task))
     const activeTasks = visibleTaskItems.filter(
@@ -4279,34 +4539,212 @@ function ReportsView({
 
 function AnalyticsView({
   attendanceEvents,
+  complaintItems,
+  manualEvaluations,
   placements,
   reportItems,
+  role,
+  session,
   taskItems,
 }: {
   attendanceEvents: AttendanceEventRecord[]
+  complaintItems: ComplaintRecord[]
+  manualEvaluations: ManualEvaluationRecord[]
   placements: InternRecord[]
   reportItems: ReportRecord[]
+  role: RoleId
+  session: LoginSession
   taskItems: TaskRecord[]
 }) {
-  const programTrend = useMemo(
-    () => buildProgramTrend(attendanceEvents, taskItems, reportItems, placements),
-    [attendanceEvents, placements, reportItems, taskItems],
+  const scopedPlacements = useMemo(
+    () =>
+      placements.filter((placement) => {
+        if (role === 'admin') return true
+        if (role === 'companySupervisor') return sameCredential(placement.company, session.organization)
+        if (role === 'universitySupervisor') return sameCredential(placement.university, session.organization)
+        return sameCredential(placement.studentNo, session.loginId)
+      }),
+    [placements, role, session.loginId, session.organization],
   )
-  const taskMixEntries = useMemo(() => buildTaskMix(taskItems), [taskItems])
-  const taskCompletion = calculateTaskCompletionRate(taskItems)
-  const departmentPerformance = useMemo(() => buildDepartmentStats(placements, taskItems), [placements, taskItems])
+  const placementOwnsRecord = (studentNo?: string, name?: string) =>
+    scopedPlacements.some(
+      (placement) =>
+        sameCredential(studentNo ?? '', placement.studentNo) ||
+        samePersonName(name ?? '', placement.name),
+    )
+  const scopedTasks = useMemo(
+    () =>
+      taskItems.filter((task) => {
+        if (role === 'admin') return true
+        if (role === 'companySupervisor') {
+          return sameCredential(task.company ?? '', session.organization) || placementOwnsRecord(task.studentNo, task.intern)
+        }
+        if (role === 'universitySupervisor') {
+          return sameCredential(task.university ?? '', session.organization) || placementOwnsRecord(task.studentNo, task.intern)
+        }
+        return taskBelongsToSession(task, session)
+      }),
+    [role, scopedPlacements, session, taskItems],
+  )
+  const scopedReports = useMemo(
+    () =>
+      reportItems.filter((report) => {
+        if (role === 'admin') return true
+        if (role === 'companySupervisor') {
+          return sameCredential(report.company ?? '', session.organization) || placementOwnsRecord(report.studentNo, report.owner)
+        }
+        if (role === 'universitySupervisor') {
+          return sameCredential(report.university ?? '', session.organization) || placementOwnsRecord(report.studentNo, report.owner)
+        }
+        return sameCredential(report.studentNo ?? '', session.loginId) || samePersonName(report.owner, session.name)
+      }),
+    [reportItems, role, scopedPlacements, session],
+  )
+  const scopedAttendance = useMemo(
+    () =>
+      attendanceEvents.filter((event) => {
+        if (role === 'admin') return true
+        if (role === 'companySupervisor') {
+          return sameCredential(event.company, session.organization) || placementOwnsRecord(event.studentNo, event.internName)
+        }
+        if (role === 'universitySupervisor') {
+          return sameCredential(event.university, session.organization) || placementOwnsRecord(event.studentNo, event.internName)
+        }
+        return sameCredential(event.studentNo, session.loginId) || samePersonName(event.internName, session.name)
+      }),
+    [attendanceEvents, role, scopedPlacements, session],
+  )
+  const scopedEvaluations = useMemo(
+    () =>
+      manualEvaluations.filter((evaluation) => {
+        if (role === 'admin') return true
+        if (role === 'companySupervisor') return sameCredential(evaluation.company, session.organization)
+        if (role === 'universitySupervisor') return sameCredential(evaluation.university, session.organization)
+        return evaluationBelongsToSession(evaluation, session)
+      }),
+    [manualEvaluations, role, session],
+  )
+  const scopedComplaints = useMemo(
+    () =>
+      complaintItems.filter((complaint) => {
+        if (role === 'admin') return true
+        if (role === 'companySupervisor') {
+          return complaint.audience === 'Company Supervisor' || samePersonName(complaint.submittedBy, session.name)
+        }
+        if (role === 'universitySupervisor') {
+          return complaint.audience === 'University Supervisor' || samePersonName(complaint.submittedBy, session.name)
+        }
+        return samePersonName(complaint.submittedBy, session.name)
+      }),
+    [complaintItems, role, session.name],
+  )
+  const programTrend = useMemo(
+    () => buildProgramTrend(scopedAttendance, scopedTasks, scopedReports, scopedPlacements),
+    [scopedAttendance, scopedPlacements, scopedReports, scopedTasks],
+  )
+  const taskMixEntries = useMemo(() => buildTaskMix(scopedTasks), [scopedTasks])
+  const taskCompletion = calculateTaskCompletionRate(scopedTasks)
+  const departmentPerformance = useMemo(() => buildDepartmentStats(scopedPlacements, scopedTasks), [scopedPlacements, scopedTasks])
+  const attendanceStats = useMemo(() => calculateAttendanceStats(scopedAttendance), [scopedAttendance])
+  const approvedReports = scopedReports.filter((report) => report.status === 'Approved').length
+  const pendingReports = scopedReports.filter((report) => !['Approved', 'Rejected'].includes(report.status)).length
+  const reportCompletion = scopedReports.length > 0 ? clampPercent((approvedReports / scopedReports.length) * 100) : 0
+  const evaluationScore = calculateEvaluationScore(scopedEvaluations)
+  const unresolvedComplaints = scopedComplaints.filter((complaint) => complaint.status !== 'Resolved').length
+  const reviewQueue = scopedTasks.filter(taskAwaitingCompanyApproval).length
+  const analyticsMetrics: Metric[] = [
+    {
+      label: 'Scoped interns',
+      value: String(scopedPlacements.length),
+      delta: role === 'admin' ? 'All active placements' : session.organization,
+      tone: 'blue',
+    },
+    {
+      label: 'Attendance rate',
+      value: `${attendanceStats.attendanceRate}%`,
+      delta: `${attendanceStats.checkInDays} recorded day(s)`,
+      tone: 'green',
+    },
+    {
+      label: 'Task completion',
+      value: `${taskCompletion}%`,
+      delta: reviewQueue ? `${reviewQueue} waiting approval` : `${scopedTasks.length} task(s) tracked`,
+      tone: 'amber',
+    },
+    {
+      label: 'Report approval',
+      value: `${reportCompletion}%`,
+      delta: pendingReports ? `${pendingReports} pending` : `${scopedReports.length} report(s) tracked`,
+      tone: 'violet',
+    },
+    {
+      label: 'Evaluation score',
+      value: `${evaluationScore}%`,
+      delta: scopedEvaluations.length ? `${scopedEvaluations.length} manual evaluation(s)` : 'No evaluations yet',
+      tone: 'green',
+    },
+    {
+      label: 'Complaints',
+      value: String(unresolvedComplaints),
+      delta: 'Unresolved in this scope',
+      tone: unresolvedComplaints ? 'red' : 'blue',
+    },
+  ]
+  const placementAnalyticsRows = scopedPlacements.map((placement) => {
+    const placementTasks = scopedTasks.filter((task) => taskBelongsToPlacement(task, placement))
+    const placementReports = scopedReports.filter(
+      (report) =>
+        sameCredential(report.studentNo ?? '', placement.studentNo) ||
+        samePersonName(report.owner, placement.name),
+    )
+    const placementEvaluations = scopedEvaluations.filter(
+      (evaluation) =>
+        sameCredential(evaluation.studentNo, placement.studentNo) ||
+        samePersonName(evaluation.internName, placement.name),
+    )
+
+    return {
+      approvedReports: placementReports.filter((report) => report.status === 'Approved').length,
+      attendance: placement.attendance,
+      company: placement.company,
+      evaluation: calculateEvaluationScore(placementEvaluations),
+      intern: placement.name,
+      pendingReports: placementReports.filter((report) => !['Approved', 'Rejected'].includes(report.status)).length,
+      studentNo: placement.studentNo,
+      taskCompletion: calculateTaskCompletionRate(placementTasks),
+      tasks: placementTasks.length,
+      university: placement.university,
+    }
+  })
+  const analyticsTitle =
+    role === 'admin'
+      ? 'System analytics'
+      : role === 'companySupervisor'
+        ? 'Company analytics'
+        : role === 'universitySupervisor'
+          ? 'University analytics'
+          : 'Intern analytics'
 
   return (
     <div className="dashboard-grid">
       <section className="panel wide-panel">
-        <PanelHeader icon={BarChart3} title="Department performance" />
+        <PanelHeader icon={BarChart3} title={analyticsTitle} />
+        <div className="metrics-grid analytics-metrics">
+          {analyticsMetrics.map((metric, index) => (
+            <MetricCard icon={metricIcons[index] ?? Activity} key={metric.label} metric={metric} />
+          ))}
+        </div>
+      </section>
+
+      <section className="panel wide-panel">
+        <PanelHeader icon={BarChart3} title="Department performance from assigned placements" />
         <div className="chart-area">
           <BarComparisonChart data={departmentPerformance} />
         </div>
       </section>
 
       <section className="panel">
-        <PanelHeader icon={ClipboardCheck} title="Task completion mix" />
+        <PanelHeader icon={ClipboardCheck} title="Task completion mix from stored tasks" />
         <div className="donut-area">
           <DonutChart completion={taskCompletion} data={taskMixEntries} />
         </div>
@@ -4321,7 +4759,7 @@ function AnalyticsView({
       </section>
 
       <section className="panel">
-        <PanelHeader icon={LineChart} title="Completion rates" />
+        <PanelHeader icon={LineChart} title="Six-day activity trend" />
         <div className="chart-area short">
           <TrendChart
             colorA="#7c55c7"
@@ -4334,6 +4772,39 @@ function AnalyticsView({
           />
         </div>
       </section>
+
+      <DataTable
+        columns={['Intern', 'Company', 'University', 'Attendance', 'Tasks', 'Reports', 'Evaluation']}
+        emptyMessage="No analytics records exist in this scope yet."
+        rows={placementAnalyticsRows}
+        renderRow={(row: (typeof placementAnalyticsRows)[number]) => (
+          <>
+            <td>
+              {row.intern}
+              <small>{row.studentNo}</small>
+            </td>
+            <td>{row.company}</td>
+            <td>{row.university}</td>
+            <td>
+              <ProgressBar value={row.attendance} />
+              <small>{row.attendance}%</small>
+            </td>
+            <td>
+              <ProgressBar value={row.taskCompletion} />
+              <small>{row.taskCompletion}% of {row.tasks} task(s)</small>
+            </td>
+            <td>
+              {row.approvedReports} approved
+              <small>{row.pendingReports} pending</small>
+            </td>
+            <td>
+              <ProgressBar value={row.evaluation} />
+              <small>{row.evaluation}%</small>
+            </td>
+          </>
+        )}
+        title="Per-intern analytics basis"
+      />
     </div>
   )
 }
