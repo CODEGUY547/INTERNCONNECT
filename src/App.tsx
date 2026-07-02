@@ -3301,6 +3301,7 @@ function TasksView({
   const getTaskDraftKey = (task: TaskRecord) => task.id ?? `${task.studentNo ?? task.intern}-${task.title}`
   const taskProgressForStatus = (task: TaskRecord, status: TaskRecord['status']) => {
     if (status === 'Completed') return 100
+    if (status === 'Submitted') return Math.max(Number(task.progress ?? 0), 90)
     if (status === 'Rejected') return Math.max(Number(task.progress ?? 0), 65)
     if (status === 'In Progress') return Math.max(Number(task.progress ?? 0), 50)
     return Number(task.progress ?? 0)
@@ -3422,7 +3423,7 @@ function TasksView({
         attachments: 0,
         action: 'submit',
         progress: Math.max(Number(task.progress ?? 0), 90),
-        status: 'In Progress',
+        status: 'Submitted',
         submissionNote,
       },
       'Task sent to company supervisor for approval',

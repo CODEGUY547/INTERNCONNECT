@@ -1019,6 +1019,7 @@ const taskIsAwaitingCompanyApproval = (task) =>
 
 const taskProgressForStatus = (task, status) => {
   if (status === 'Completed') return 100
+  if (status === 'Submitted') return Math.max(Number(task.progress ?? 0), 90)
   if (status === 'Rejected' || status === 'Needs correction') return Math.max(Number(task.progress ?? 0), 65)
   if (status === 'In Progress') return Math.max(Number(task.progress ?? 0), 50)
   return Number(task.progress ?? 0)
@@ -1509,7 +1510,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req)
       const requestedStatus = cleanTaskText(body.status, 40)
       const requestedAction = cleanTaskText(body.action, 40)
-      const allowedStatuses = new Set(['Pending', 'In Progress', 'Completed', 'Overdue', 'Rejected'])
+      const allowedStatuses = new Set(['Pending', 'In Progress', 'Submitted', 'Completed', 'Overdue', 'Rejected'])
       if (!allowedStatuses.has(requestedStatus)) {
         json(res, 422, { error: 'Choose a valid task status.' })
         return
@@ -1522,8 +1523,8 @@ const server = http.createServer(async (req, res) => {
           requestedStatus === 'In Progress' &&
           ['Pending', 'Rejected', 'Needs correction'].includes(task.status)
         const internCanSubmit =
-          requestedAction === 'submit' &&
-          requestedStatus === 'In Progress' &&
+          (requestedAction === 'submit' || requestedStatus === 'Submitted') &&
+          ['In Progress', 'Submitted'].includes(requestedStatus) &&
           !awaitingApproval &&
           ['In Progress', 'Overdue', 'Rejected', 'Needs correction'].includes(task.status)
 
@@ -1542,7 +1543,7 @@ const server = http.createServer(async (req, res) => {
           task.submissionNote = submissionNote
           task.attachments = 0
           task.submittedAt = new Date().toLocaleString()
-          task.status = 'In Progress'
+          task.status = 'Submitted'
           task.progress = Math.max(Number(task.progress ?? 0), 90)
           delete task.evidenceUrl
           delete task.reviewComment
