@@ -65,7 +65,6 @@ export interface AttendanceRecord {
 
 export interface TaskRecord {
   company?: string
-  evidenceUrl?: string
   id?: string
   title: string
   intern: string

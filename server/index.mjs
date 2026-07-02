@@ -1013,18 +1013,6 @@ const canManageTask = (user, task) => {
 
 const cleanTaskText = (value, limit = 1500) => String(value ?? '').trim().slice(0, limit)
 
-const cleanEvidenceUrl = (value) => {
-  const evidenceUrl = cleanTaskText(value, 500)
-  if (!evidenceUrl) return ''
-
-  try {
-    const parsed = new URL(evidenceUrl)
-    return ['http:', 'https:'].includes(parsed.protocol) ? evidenceUrl : null
-  } catch {
-    return null
-  }
-}
-
 const taskProgressForStatus = (task, status) => {
   if (status === 'Completed') return 100
   if (status === 'Submitted') return Math.max(Number(task.progress ?? 0), 90)
@@ -1536,20 +1524,15 @@ const server = http.createServer(async (req, res) => {
 
         if (internCanSubmit) {
           const submissionNote = cleanTaskText(body.submissionNote)
-          const evidenceUrl = cleanEvidenceUrl(body.evidenceUrl)
           if (!submissionNote) {
             json(res, 422, { error: 'Add a work summary before submitting the task.' })
             return
           }
-          if (evidenceUrl === null) {
-            json(res, 422, { error: 'Evidence link must start with http:// or https://.' })
-            return
-          }
 
           task.submissionNote = submissionNote
-          task.evidenceUrl = evidenceUrl
-          task.attachments = evidenceUrl ? 1 : 0
+          task.attachments = 0
           task.submittedAt = new Date().toLocaleString()
+          delete task.evidenceUrl
           delete task.reviewComment
           delete task.reviewedAt
           delete task.reviewedBy

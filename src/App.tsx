@@ -3247,7 +3247,7 @@ function TasksView({
   const lanes: TaskRecord['status'][] = ['Pending', 'In Progress', 'Submitted', 'Needs correction', 'Completed', 'Overdue', 'Rejected']
   const [composerOpen, setComposerOpen] = useState(false)
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, string>>({})
-  const [submissionDrafts, setSubmissionDrafts] = useState<Record<string, { evidenceUrl: string; note: string }>>({})
+  const [submissionDrafts, setSubmissionDrafts] = useState<Record<string, string>>({})
   const assignablePlacements =
     role === 'companySupervisor'
       ? placements.filter((placement) => sameCredential(placement.company, session.organization))
@@ -3378,23 +3378,16 @@ function TasksView({
 
   const submitTaskForReview = async (task: TaskRecord) => {
     const taskKey = getTaskDraftKey(task)
-    const draft = submissionDrafts[taskKey] ?? { evidenceUrl: '', note: '' }
-    const submissionNote = draft.note.trim()
-    const evidenceUrl = draft.evidenceUrl.trim()
+    const submissionNote = (submissionDrafts[taskKey] ?? '').trim()
     if (!submissionNote) {
       triggerToast('Add a short work summary before submitting')
-      return
-    }
-    if (evidenceUrl && !/^https?:\/\//i.test(evidenceUrl)) {
-      triggerToast('Evidence link must start with http:// or https://')
       return
     }
 
     const updatedTask = await patchTask(
       task,
       {
-        attachments: evidenceUrl ? 1 : 0,
-        evidenceUrl,
+        attachments: 0,
         progress: taskProgressForStatus(task, 'Submitted'),
         status: 'Submitted',
         submissionNote,
@@ -3531,7 +3524,7 @@ function TasksView({
               .filter((task) => task.status === lane)
               .map((task) => {
                 const taskKey = getTaskDraftKey(task)
-                const submissionDraft = submissionDrafts[taskKey] ?? { evidenceUrl: task.evidenceUrl ?? '', note: '' }
+                const submissionDraft = submissionDrafts[taskKey] ?? ''
                 const reviewDraft = reviewDrafts[taskKey] ?? ''
                 const canSubmitTask = role === 'intern' && ['In Progress', 'Overdue', 'Needs correction', 'Rejected'].includes(task.status)
                 const canReviewTask = role !== 'intern' && task.status === 'Submitted'
@@ -3552,15 +3545,10 @@ function TasksView({
                         {task.attachments}
                       </span>
                     </div>
-                    {(task.submissionNote || task.evidenceUrl) && (
+                    {task.submissionNote && (
                       <div className="task-note">
                         <strong>Submitted work</strong>
-                        {task.submissionNote && <span>{task.submissionNote}</span>}
-                        {task.evidenceUrl && (
-                          <a href={task.evidenceUrl} rel="noreferrer" target="_blank">
-                            Open evidence
-                          </a>
-                        )}
+                        <span>{task.submissionNote}</span>
                         {task.submittedAt && <small>{task.submittedAt}</small>}
                       </div>
                     )}
@@ -3579,25 +3567,12 @@ function TasksView({
                             onChange={(event) =>
                               setSubmissionDrafts((current) => ({
                                 ...current,
-                                [taskKey]: { ...submissionDraft, note: event.target.value },
+                                [taskKey]: event.target.value,
                               }))
                             }
                             placeholder="Summarize what you completed"
                             rows={3}
-                            value={submissionDraft.note}
-                          />
-                        </label>
-                        <label>
-                          <span>Evidence link</span>
-                          <input
-                            onChange={(event) =>
-                              setSubmissionDrafts((current) => ({
-                                ...current,
-                                [taskKey]: { ...submissionDraft, evidenceUrl: event.target.value },
-                              }))
-                            }
-                            placeholder="https://..."
-                            value={submissionDraft.evidenceUrl}
+                            value={submissionDraft}
                           />
                         </label>
                       </div>
