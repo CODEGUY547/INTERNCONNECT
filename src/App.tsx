@@ -968,7 +968,7 @@ function App() {
     void loadBackendState(true)
     const refreshTimer = window.setInterval(() => {
       void loadBackendState(false)
-    }, 10_000)
+    }, 5_000)
 
     return () => {
       ignored = true
@@ -1513,7 +1513,7 @@ function App() {
                 ? `${task.title} needs updates before it can be approved.`
                 : `Supervisor assigned: ${task.title}. Due ${task.deadline}. Status: ${task.status}.`
             : task.status === 'Submitted'
-              ? `${task.intern} submitted ${task.title} for review.`
+              ? `${task.intern} submitted ${task.title} for company supervisor approval.`
               : `${task.intern} has an overdue task due ${task.deadline}.`
         items.push({
           actionLabel: 'Open tasks',
@@ -1522,7 +1522,7 @@ function App() {
           id: `task-${task.id ?? task.studentNo ?? task.intern}-${task.title}`,
           onAction: () => setActiveView('tasks'),
           time: task.deadline,
-          title: role === 'intern' ? `Task ${task.status.toLowerCase()}: ${task.title}` : task.status === 'Submitted' ? 'Task ready for review' : task.title,
+          title: role === 'intern' ? `Task ${task.status.toLowerCase()}: ${task.title}` : task.status === 'Submitted' ? 'Task waiting for approval' : task.title,
           tone: role === 'intern' ? internTaskTone : task.status === 'Submitted' ? 'blue' : 'red',
         })
       })
@@ -3392,7 +3392,7 @@ function TasksView({
         status: 'Submitted',
         submissionNote,
       },
-      'Task submitted for supervisor review',
+      'Task sent to company supervisor for approval',
     )
     if (updatedTask) {
       setSubmissionDrafts((current) => {
@@ -3418,7 +3418,7 @@ function TasksView({
         reviewComment,
         status,
       },
-      status === 'Completed' ? 'Task approved as completed' : 'Task returned for corrections',
+      status === 'Completed' ? 'Task approved; intern will see it under Completed' : 'Task returned to intern for corrections',
     )
     if (updatedTask) {
       setReviewDrafts((current) => {
@@ -3527,7 +3527,7 @@ function TasksView({
                 const submissionDraft = submissionDrafts[taskKey] ?? ''
                 const reviewDraft = reviewDrafts[taskKey] ?? ''
                 const canSubmitTask = role === 'intern' && ['In Progress', 'Overdue', 'Needs correction', 'Rejected'].includes(task.status)
-                const canReviewTask = role !== 'intern' && task.status === 'Submitted'
+                const canReviewTask = ['admin', 'companySupervisor'].includes(role) && task.status === 'Submitted'
 
                 return (
                   <article className="task-card" key={task.id ?? task.title}>
@@ -3609,7 +3609,7 @@ function TasksView({
                         </button>
                       )}
                       {role === 'intern' && task.status === 'Submitted' && (
-                        <span className="task-state-note">Waiting for supervisor review</span>
+                        <span className="task-state-note">Waiting for company supervisor approval</span>
                       )}
                       {canReviewTask && (
                         <>
