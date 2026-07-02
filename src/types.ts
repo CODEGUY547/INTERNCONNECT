@@ -54,6 +54,7 @@ export interface InternRecord {
 
 export interface AttendanceRecord {
   name: string
+  studentNo?: string
   checkIn: string
   checkOut: string
   status: 'Present' | 'Late' | 'Working' | 'Absent' | 'Checked out'
@@ -64,14 +65,20 @@ export interface AttendanceRecord {
 
 export interface TaskRecord {
   company?: string
+  evidenceUrl?: string
   id?: string
   title: string
   intern: string
   priority: 'High' | 'Medium' | 'Low'
   deadline: string
-  status: 'Pending' | 'In Progress' | 'Completed' | 'Overdue' | 'Rejected'
+  status: 'Pending' | 'In Progress' | 'Submitted' | 'Needs correction' | 'Completed' | 'Overdue' | 'Rejected'
   progress: number
   attachments: number
+  reviewedAt?: string
+  reviewedBy?: string
+  reviewComment?: string
+  submittedAt?: string
+  submissionNote?: string
   studentNo?: string
   university?: string
 }

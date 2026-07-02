@@ -1,6 +1,6 @@
-# InternConnect Architecture
+# Intern Nexus Architecture
 
-InternConnect is structured as a modular SaaS application with a React client, a Node API boundary, and a normalized PostgreSQL data model.
+Intern Nexus is structured as a modular SaaS application with a React client, a Node API boundary, and a normalized PostgreSQL data model.
 
 ## Layers
 

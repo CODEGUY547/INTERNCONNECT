@@ -11,7 +11,7 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 
-OUT = Path(__file__).with_name("InternConnect Investor Brief.docx")
+OUT = Path(__file__).with_name("Intern Nexus Investor Brief.docx")
 
 BLUE = RGBColor(46, 116, 181)
 DARK_BLUE = RGBColor(31, 77, 120)
@@ -247,7 +247,7 @@ def configure_document(doc):
 
     header = section.header.paragraphs[0]
     header.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    run = header.add_run("InternConnect | Investor Brief")
+    run = header.add_run("Intern Nexus | Investor Brief")
     set_run(run, size=9, color=MUTED, bold=True)
     footer = section.footer.paragraphs[0]
     footer.alignment = WD_ALIGN_PARAGRAPH.RIGHT
@@ -260,7 +260,7 @@ def cover(doc):
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(0)
     p.paragraph_format.space_after = Pt(5)
-    r = p.add_run("InternConnect")
+    r = p.add_run("Intern Nexus")
     set_run(r, size=30, color=NAVY, bold=True)
     p = para(
         doc,
@@ -286,7 +286,7 @@ def cover(doc):
     add_callout(
         doc,
         "Positioning statement",
-        "InternConnect gives universities, companies, and interns one controlled system for placement visibility, GPS attendance, weekly reporting, complaints, evaluations, document sharing, and audit-ready supervision.",
+        "Intern Nexus gives universities, companies, and interns one controlled system for placement visibility, GPS attendance, daily reporting, complaints, evaluations, document sharing, and audit-ready supervision.",
     )
     para(
         doc,
@@ -312,7 +312,7 @@ def build_document():
     add_callout(
         doc,
         "The solution",
-        "InternConnect centralizes the internship lifecycle. Each user logs into a role-specific dashboard, performs only the actions allowed for that role, and leaves a traceable record for attendance, reports, complaints, documents, evaluations, and administrative decisions.",
+        "Intern Nexus centralizes the internship lifecycle. Each user logs into a role-specific dashboard, performs only the actions allowed for that role, and leaves a traceable record for attendance, reports, complaints, documents, evaluations, and administrative decisions.",
     )
     bullet(doc, "For universities: better visibility over student placements, attendance, reports, complaints, and supervisor follow-up.")
     bullet(doc, "For host companies: easier task assignment, report review, attendance confirmation, and intern evaluation.")
@@ -498,7 +498,7 @@ def build_document():
     )
 
     h1(doc, "11. Investor Discussion Talking Points")
-    bullet(doc, "InternConnect is not only an attendance tool; it is a supervision operating system for internships.")
+    bullet(doc, "Intern Nexus is not only an attendance tool; it is a supervision operating system for internships.")
     bullet(doc, "The product already has role dashboards, GPS attendance, report approval flow, complaints, documents, evaluations, audit logs, backup/restore, and admin security controls.")
     bullet(doc, "The next major technical milestone is PostgreSQL deployment, followed by email reset, hosted file storage, and pilot onboarding.")
     bullet(doc, "The first commercial opportunity is a university-led pilot with company supervisors and interns onboarded under one controlled system.")
@@ -519,9 +519,9 @@ def build_document():
         [2.0, 4.5],
     )
 
-    doc.core_properties.title = "InternConnect Investor Brief"
-    doc.core_properties.subject = "Investor presentation companion for InternConnect"
-    doc.core_properties.author = "InternConnect Team"
+    doc.core_properties.title = "Intern Nexus Investor Brief"
+    doc.core_properties.subject = "Investor presentation companion for Intern Nexus"
+    doc.core_properties.author = "Intern Nexus Team"
     doc.core_properties.comments = "Generated as an investor-facing technical and deployment readiness brief."
     doc.save(OUT)
 

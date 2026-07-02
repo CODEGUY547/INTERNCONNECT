@@ -93,6 +93,7 @@ body {
   height: 118px;
   justify-self: center;
   place-items: center;
+  overflow: hidden;
   border: 5px solid rgba(255, 255, 255, 0.95);
   border-radius: 50%;
   color: var(--blue);
@@ -100,6 +101,12 @@ body {
     linear-gradient(var(--surface), var(--surface)) padding-box,
     conic-gradient(from 180deg, var(--green), var(--blue), var(--amber), var(--green)) border-box;
   box-shadow: 0 16px 32px rgba(57, 37, 99, 0.18);
+}
+
+.login-crest > img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .login-crest span {
@@ -527,9 +534,17 @@ button {
   width: 42px;
   height: 42px;
   place-items: center;
+  overflow: hidden;
   border-radius: var(--radius);
   color: #fff;
-  background: linear-gradient(135deg, var(--violet), var(--blue));
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.brand-mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .brand strong,
@@ -1522,9 +1537,58 @@ th {
   color: var(--muted);
 }
 
+.task-note,
+.task-submission {
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  padding: 10px;
+  color: var(--text);
+  font-size: 0.86rem;
+}
+
+.task-note strong {
+  font-size: 0.74rem;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.task-note span {
+  line-height: 1.45;
+}
+
+.task-note small,
+.task-state-note {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.task-note a {
+  color: var(--primary);
+  font-weight: 800;
+}
+
+.review-note {
+  border-color: rgba(47, 111, 187, 0.25);
+}
+
+.task-submission label {
+  display: grid;
+  gap: 6px;
+}
+
+.task-submission textarea {
+  min-height: 82px;
+  resize: vertical;
+}
+
 .task-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
 }
 

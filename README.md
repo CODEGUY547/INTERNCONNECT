@@ -1,6 +1,6 @@
-# InternConnect
+# Intern Nexus
 
-InternConnect is a real-time internship management and supervision platform for interns, company supervisors, university supervisors, and administrators.
+Intern Nexus is a real-time internship management and supervision platform for interns, company supervisors, university supervisors, and administrators.
 
 ## What Is Included
 
@@ -35,7 +35,7 @@ Users log in with their approved email address or assigned ID. New users create 
 For local development, the API includes a bootstrap administrator account so the first admin can sign in before any approved accounts exist:
 
 - Administrator ID: `ADM-001`
-- Administrator email: `admin@internconnect.local`
+- Administrator email: `admin@internnexus.local`
 
 Set `BOOTSTRAP_ADMIN_PASSWORD` in your local environment before running the API. Do not use the localhost bootstrap password in production.
 
@@ -81,7 +81,7 @@ Available endpoints:
 
 ## Live GPS Attendance
 
-Open the Attendance module and click `Live GPS` or `Check in`. The browser will ask for location permission. If permission is granted, InternConnect reads the device location, shows it on the map, calculates distance from the registered company coordinates, and blocks check-in when the intern is outside the allowed radius.
+Open the Attendance module and click `Live GPS` or `Check in`. The browser will ask for location permission. If permission is granted, Intern Nexus reads the device location, shows it on the map, calculates distance from the registered company coordinates, and blocks check-in when the intern is outside the allowed radius.
 
 The check-in API now resolves the logged-in intern by student number, loads that intern's active placement, and compares live GPS against the latitude, longitude, and radius stored for the assigned company. Administrators can type any company name in `Directory` -> `Assign or update placement`, add a branch/town/address hint when needed, then use `Find coordinates` to fill the company latitude and longitude through the local backend geocoder.
 

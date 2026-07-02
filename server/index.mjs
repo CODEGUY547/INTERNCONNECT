@@ -42,11 +42,11 @@ const roleMetrics = {
 
 const bootstrapAccounts = [
   {
-    email: 'admin@internconnect.local',
+    email: 'admin@internnexus.local',
     loginId: 'ADM-001',
     loginLabel: 'Admin staff ID',
     name: 'System Administrator',
-    organization: 'InternConnect HQ',
+    organization: 'Intern Nexus HQ',
     passwordHash: bcrypt.hashSync(bootstrapAdminPassword, 12),
     role: 'admin',
   },
@@ -409,7 +409,7 @@ const storeCounts = (data = store) => ({
 const createBackupPayload = () => ({
   data: store,
   exportedAt: new Date().toISOString(),
-  system: 'InternConnect',
+  system: 'Intern Nexus',
   version: 'local-json-v2',
 })
 
@@ -694,7 +694,7 @@ const nominatimLookup = async (searchText) => {
   const response = await fetch(endpoint, {
     headers: {
       Accept: 'application/json',
-      'User-Agent': 'InternConnect-localhost/1.0',
+      'User-Agent': 'InternNexus-localhost/1.0',
     },
   })
 
@@ -728,7 +728,7 @@ const photonLookup = async (searchText) => {
   const response = await fetch(endpoint, {
     headers: {
       Accept: 'application/json',
-      'User-Agent': 'InternConnect-localhost/1.0',
+      'User-Agent': 'InternNexus-localhost/1.0',
     },
   })
 
@@ -1009,6 +1009,28 @@ const canManageTask = (user, task) => {
     return Boolean(placement && canAccessPlacement(user, placement))
   }
   return false
+}
+
+const cleanTaskText = (value, limit = 1500) => String(value ?? '').trim().slice(0, limit)
+
+const cleanEvidenceUrl = (value) => {
+  const evidenceUrl = cleanTaskText(value, 500)
+  if (!evidenceUrl) return ''
+
+  try {
+    const parsed = new URL(evidenceUrl)
+    return ['http:', 'https:'].includes(parsed.protocol) ? evidenceUrl : null
+  } catch {
+    return null
+  }
+}
+
+const taskProgressForStatus = (task, status) => {
+  if (status === 'Completed') return 100
+  if (status === 'Submitted') return Math.max(Number(task.progress ?? 0), 90)
+  if (status === 'Needs correction' || status === 'Rejected') return Math.max(Number(task.progress ?? 0), 65)
+  if (status === 'In Progress') return Math.max(Number(task.progress ?? 0), 50)
+  return Number(task.progress ?? 0)
 }
 
 const announcementsForViewer = (user) =>
@@ -1467,7 +1489,7 @@ const server = http.createServer(async (req, res) => {
         priority: body.priority ?? 'Medium',
         progress: clampScore(body.progress ?? 0),
         studentNo: placement.studentNo,
-        status: body.status ?? 'Pending',
+        status: 'Pending',
         title,
         university: placement.university,
       }
@@ -1494,17 +1516,68 @@ const server = http.createServer(async (req, res) => {
       }
 
       const body = await readBody(req)
-      const allowedStatuses = new Set(['Pending', 'In Progress', 'Completed', 'Overdue', 'Rejected'])
-      if (allowedStatuses.has(body.status)) {
-        task.status = body.status
+      const requestedStatus = cleanTaskText(body.status, 40)
+      const allowedStatuses = new Set(['Pending', 'In Progress', 'Submitted', 'Needs correction', 'Completed', 'Overdue', 'Rejected'])
+      if (!allowedStatuses.has(requestedStatus)) {
+        json(res, 422, { error: 'Choose a valid task status.' })
+        return
       }
-      if (body.progress !== undefined) {
-        task.progress = clampScore(body.progress)
-      } else if (task.status === 'Completed') {
-        task.progress = 100
-      } else if (task.status === 'In Progress') {
-        task.progress = Math.max(Number(task.progress ?? 0), 50)
+
+      if (user.role === 'intern') {
+        const internCanStart =
+          requestedStatus === 'In Progress' && ['Pending', 'Needs correction', 'Rejected'].includes(task.status)
+        const internCanSubmit =
+          requestedStatus === 'Submitted' && ['In Progress', 'Overdue', 'Needs correction', 'Rejected'].includes(task.status)
+
+        if (!internCanStart && !internCanSubmit) {
+          json(res, 403, { error: 'Interns can only start tasks or submit them for supervisor review.' })
+          return
+        }
+
+        if (internCanSubmit) {
+          const submissionNote = cleanTaskText(body.submissionNote)
+          const evidenceUrl = cleanEvidenceUrl(body.evidenceUrl)
+          if (!submissionNote) {
+            json(res, 422, { error: 'Add a work summary before submitting the task.' })
+            return
+          }
+          if (evidenceUrl === null) {
+            json(res, 422, { error: 'Evidence link must start with http:// or https://.' })
+            return
+          }
+
+          task.submissionNote = submissionNote
+          task.evidenceUrl = evidenceUrl
+          task.attachments = evidenceUrl ? 1 : 0
+          task.submittedAt = new Date().toLocaleString()
+          delete task.reviewComment
+          delete task.reviewedAt
+          delete task.reviewedBy
+        }
+      } else {
+        const supervisorCanReview =
+          ['admin', 'companySupervisor'].includes(user.role) &&
+          ['Completed', 'Needs correction', 'Rejected'].includes(requestedStatus) &&
+          task.status === 'Submitted'
+
+        if (!supervisorCanReview) {
+          json(res, 403, { error: 'Supervisors can only approve or return submitted tasks.' })
+          return
+        }
+
+        const reviewComment = cleanTaskText(body.reviewComment, 1000)
+        if (['Needs correction', 'Rejected'].includes(requestedStatus) && !reviewComment) {
+          json(res, 422, { error: 'Add a review comment before returning the task.' })
+          return
+        }
+
+        task.reviewComment = reviewComment
+        task.reviewedAt = new Date().toLocaleString()
+        task.reviewedBy = user.name
       }
+
+      task.status = requestedStatus
+      task.progress = clampScore(taskProgressForStatus(task, requestedStatus))
 
       if (!task.id) task.id = `TASK-${Date.now()}-${Math.floor(Math.random() * 1000)}`
       await saveData()
@@ -2132,5 +2205,5 @@ const server = http.createServer(async (req, res) => {
 })
 
 server.listen(port, () => {
-  console.log(`InternConnect API running at http://127.0.0.1:${port}`)
+  console.log(`Intern Nexus API running at http://127.0.0.1:${port}`)
 })

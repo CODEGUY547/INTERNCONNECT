@@ -23,7 +23,7 @@ export const roles: RoleProfile[] = [
     label: 'Administrator',
     shortLabel: 'Admin',
     profileName: 'System Administrator',
-    organization: 'InternConnect HQ',
+    organization: 'Intern Nexus HQ',
     summary: 'System-wide control center for users, placements, reports, exports, and audit visibility.',
   },
   {

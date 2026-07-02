@@ -7,7 +7,6 @@ import {
   BarChart3,
   Bell,
   Bot,
-  Briefcase,
   Building2,
   CheckCircle2,
   CircleDot,
@@ -123,6 +122,7 @@ const viewAccess: Record<ViewKey, RoleId[]> = {
 }
 
 const canAccessView = (view: ViewKey, role: RoleId) => role === 'admin' || viewAccess[view].includes(role)
+const logoSrc = '/intern-nexus-logo.jpeg'
 
 interface AppAccount {
   email: string
@@ -268,11 +268,11 @@ const defaultAnnouncementDraft: AnnouncementDraft = {
 
 const bootstrapAccounts: AppAccount[] = [
   {
-    email: 'admin@internconnect.local',
+    email: 'admin@internnexus.local',
     loginId: 'ADM-001',
     loginLabel: 'Admin staff ID',
     name: 'System Administrator',
-    organization: 'InternConnect HQ',
+    organization: 'Intern Nexus HQ',
     role: 'admin',
   },
 ]
@@ -518,7 +518,11 @@ const statusTone = (status: string): StatusTone => {
     return 'green'
   }
 
-  if (['Late', 'Pending', 'Pending review', 'Pending company approval', 'In Progress', 'In review', 'Medium', 'Open'].includes(status)) {
+  if (
+    ['Late', 'Pending', 'Pending review', 'Pending company approval', 'In Progress', 'In review', 'Medium', 'Open', 'Submitted'].includes(
+      status,
+    )
+  ) {
     return 'amber'
   }
 
@@ -526,7 +530,11 @@ const statusTone = (status: string): StatusTone => {
     return 'blue'
   }
 
-  if (['Overdue', 'Rejected', 'Absent', 'Needs review', 'Corrections requested', 'Escalated', 'High'].includes(status)) {
+  if (
+    ['Overdue', 'Rejected', 'Absent', 'Needs review', 'Needs correction', 'Corrections requested', 'Escalated', 'High'].includes(
+      status,
+    )
+  ) {
     return 'red'
   }
 
@@ -625,7 +633,28 @@ const formatMeters = (value?: number | null) => {
 const clampPercent = (value: number) => Math.min(100, Math.max(0, Math.round(value)))
 
 const parseStoredDate = (value?: string | null) => {
-  const parsed = Date.parse(String(value ?? ''))
+  const dateText = String(value ?? '').trim()
+  const dayFirstMatch = dateText.match(
+    /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:,\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?/i,
+  )
+
+  if (dayFirstMatch) {
+    const [, day, month, year, hour = '0', minute = '0', second = '0', meridiem] = dayFirstMatch
+    let parsedHour = Number(hour)
+    if (meridiem?.toUpperCase() === 'PM' && parsedHour < 12) parsedHour += 12
+    if (meridiem?.toUpperCase() === 'AM' && parsedHour === 12) parsedHour = 0
+
+    return new Date(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      parsedHour,
+      Number(minute),
+      Number(second),
+    )
+  }
+
+  const parsed = Date.parse(dateText)
   return Number.isFinite(parsed) ? new Date(parsed) : new Date()
 }
 
@@ -707,6 +736,29 @@ const calculateAttendanceStats = (events: AttendanceEventRecord[], now = new Dat
   }
 }
 
+const sortAttendanceEvents = (events: AttendanceEventRecord[]) =>
+  [...events].sort(
+    (left, right) => parseStoredDate(right.occurredAt).getTime() - parseStoredDate(left.occurredAt).getTime(),
+  )
+
+const mergeAttendanceEvents = (
+  backendEvents: AttendanceEventRecord[],
+  currentEvents: AttendanceEventRecord[],
+) => {
+  const eventsById = new Map<string, AttendanceEventRecord>()
+
+  currentEvents
+    .filter((event) => event.id.startsWith('ATT-LOCAL-'))
+    .forEach((event) => {
+      eventsById.set(event.id, event)
+    })
+  backendEvents.forEach((event) => {
+    eventsById.set(event.id, event)
+  })
+
+  return sortAttendanceEvents(Array.from(eventsById.values())).slice(0, 100)
+}
+
 const calculateEvaluationScore = (evaluations: ManualEvaluationRecord[]) => {
   if (evaluations.length === 0) return 0
 
@@ -779,6 +831,7 @@ const buildDepartmentStats = (placements: InternRecord[], tasks: TaskRecord[]) =
 const buildTaskMix = (tasks: TaskRecord[]) => [
   { color: '#2f9e73', name: 'Completed', value: tasks.filter((task) => task.status === 'Completed').length },
   { color: '#2f6fbb', name: 'In progress', value: tasks.filter((task) => task.status === 'In Progress').length },
+  { color: '#7c5cff', name: 'Submitted', value: tasks.filter((task) => task.status === 'Submitted').length },
   { color: '#d89a25', name: 'Pending', value: tasks.filter((task) => task.status === 'Pending').length },
   { color: '#d9534f', name: 'Overdue', value: tasks.filter((task) => task.status === 'Overdue').length },
 ]
@@ -897,8 +950,11 @@ function App() {
         setComplaintItems(complaintsPayload.complaints)
         setPlacementItems(nextPlacements)
         writeStoredArray(placementsStorageKey, nextPlacements)
-        setAttendanceEvents(attendanceEventsPayload.events)
-        writeStoredArray(attendanceEventsStorageKey, attendanceEventsPayload.events)
+        setAttendanceEvents((currentEvents) => {
+          const nextEvents = mergeAttendanceEvents(attendanceEventsPayload.events, currentEvents)
+          writeStoredArray(attendanceEventsStorageKey, nextEvents)
+          return nextEvents
+        })
         setTaskItems(tasksPayload.tasks)
         setReportItems(reportsPayload.reports)
         setManualEvaluationItems(evaluationsPayload.evaluations)
@@ -1124,7 +1180,7 @@ function App() {
       setCheckedIn(event.type === 'check-in')
     }
     setAttendanceEvents((currentEvents) => {
-      const nextEvents = [event, ...currentEvents.filter((item) => item.id !== event.id)].slice(0, 100)
+      const nextEvents = sortAttendanceEvents([event, ...currentEvents.filter((item) => item.id !== event.id)]).slice(0, 100)
       writeStoredArray(attendanceEventsStorageKey, nextEvents)
       return nextEvents
     })
@@ -1273,7 +1329,7 @@ function App() {
 
   const handleDeleteIntern = async (placement: InternRecord) => {
     const confirmed = window.confirm(
-      `Delete ${placement.name} from InternConnect? This removes the intern account, placement, approval request, and assigned local API tasks.`,
+      `Delete ${placement.name} from Intern Nexus? This removes the intern account, placement, approval request, and assigned local API tasks.`,
     )
     if (!confirmed) return
 
@@ -1314,7 +1370,7 @@ function App() {
   const notificationItems = useMemo<NotificationItem[]>(() => {
     const items: NotificationItem[] = []
     const currentInternTask = (task: TaskRecord) =>
-      sameCredential(task.intern, session?.name ?? '') || sameCredential(task.intern, session?.loginId ?? '')
+      session ? taskBelongsToSession(task, session) : false
     const announcementVisibleToRole = (audience: string) => {
       const normalizedAudience = audience.trim().toLowerCase()
       if (role === 'admin') return true
@@ -1426,27 +1482,48 @@ function App() {
       })
 
     taskItems
-      .filter((task) =>
-        role === 'intern'
-          ? currentInternTask(task) && ['Pending', 'In Progress', 'Overdue'].includes(task.status)
-          : task.status === 'Overdue',
-      )
+      .filter((task) => {
+        if (role === 'intern') {
+          return currentInternTask(task) && ['Pending', 'Overdue', 'Needs correction', 'Rejected', 'Completed'].includes(task.status)
+        }
+        if (role === 'companySupervisor') {
+          return sameCredential(task.company ?? '', session?.organization ?? '') && ['Submitted', 'Overdue'].includes(task.status)
+        }
+        if (role === 'admin') return ['Submitted', 'Overdue'].includes(task.status)
+
+        return false
+      })
       .slice(0, role === 'intern' ? 8 : 3)
       .forEach((task) => {
         const internTaskTone =
-          task.status === 'Overdue' ? 'red' : task.priority === 'High' ? 'amber' : task.priority === 'Low' ? 'green' : 'blue'
+          task.status === 'Overdue' || task.status === 'Needs correction' || task.status === 'Rejected'
+            ? 'red'
+            : task.status === 'Completed'
+              ? 'green'
+              : task.priority === 'High'
+                ? 'amber'
+                : task.priority === 'Low'
+                  ? 'green'
+                  : 'blue'
+        const taskDescription =
+          role === 'intern'
+            ? task.status === 'Completed'
+              ? `${task.title} was approved by ${task.reviewedBy ?? 'your supervisor'}.`
+              : task.status === 'Needs correction' || task.status === 'Rejected'
+                ? `${task.title} needs updates before it can be approved.`
+                : `Supervisor assigned: ${task.title}. Due ${task.deadline}. Status: ${task.status}.`
+            : task.status === 'Submitted'
+              ? `${task.intern} submitted ${task.title} for review.`
+              : `${task.intern} has an overdue task due ${task.deadline}.`
         items.push({
           actionLabel: 'Open tasks',
           category: 'Task',
-          description:
-            role === 'intern'
-              ? `Supervisor assigned: ${task.title}. Due ${task.deadline}. Status: ${task.status}.`
-              : `${task.intern} has an overdue task due ${task.deadline}.`,
-          id: `task-${task.title}`,
+          description: taskDescription,
+          id: `task-${task.id ?? task.studentNo ?? task.intern}-${task.title}`,
           onAction: () => setActiveView('tasks'),
           time: task.deadline,
-          title: role === 'intern' ? `Task assigned: ${task.title}` : task.title,
-          tone: role === 'intern' ? internTaskTone : 'red',
+          title: role === 'intern' ? `Task ${task.status.toLowerCase()}: ${task.title}` : task.status === 'Submitted' ? 'Task ready for review' : task.title,
+          tone: role === 'intern' ? internTaskTone : task.status === 'Submitted' ? 'blue' : 'red',
         })
       })
 
@@ -1509,10 +1586,10 @@ function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
-            <Briefcase size={20} aria-hidden="true" />
+            <img alt="" src={logoSrc} />
           </div>
           <div>
-            <strong>InternConnect</strong>
+            <strong>Intern Nexus</strong>
             <span>Real-time internship OS</span>
           </div>
         </div>
@@ -1670,10 +1747,11 @@ function App() {
           )}
           {activeView === 'attendance' && (
             <AttendanceView
-              attendanceEvents={attendanceEvents}
-              checkedIn={checkedIn}
-              onAttendanceEvent={handleAttendanceEvent}
-              placements={livePlacementItems}
+          attendanceEvents={attendanceEvents}
+          checkedIn={checkedIn}
+          liveTick={liveTick}
+          onAttendanceEvent={handleAttendanceEvent}
+          placements={livePlacementItems}
               role={role}
               session={session}
               setCheckedIn={setCheckedIn}
@@ -1897,10 +1975,10 @@ function LoginView({
       <section className="login-shell">
         <div className="login-brand">
           <div className="brand-mark">
-            <Briefcase size={22} aria-hidden="true" />
+            <img alt="" src={logoSrc} />
           </div>
           <div>
-            <strong>InternConnect</strong>
+            <strong>Intern Nexus</strong>
             <span>Internship management system</span>
           </div>
           <button className="icon-button" onClick={onToggleTheme} title="Toggle theme" type="button">
@@ -1910,14 +1988,14 @@ function LoginView({
 
         <form className="login-card" onSubmit={isSignupMode ? submitSignup : submitLogin}>
           <div className="login-crest" aria-hidden="true">
-            <Briefcase size={42} />
+            <img alt="" src={logoSrc} />
             <span>
               <ShieldCheck size={18} />
             </span>
           </div>
 
           <div className="login-card-heading">
-            <h1>{isSignupMode ? 'Create InternConnect account' : 'Welcome to InternConnect'}</h1>
+            <h1>{isSignupMode ? 'Create Intern Nexus account' : 'Welcome to Intern Nexus'}</h1>
             <p>
               {isSignupMode
                 ? 'Submit your details for administrator approval before your dashboard access is activated.'
@@ -2153,7 +2231,7 @@ function LoginView({
               </div>
 
               <small className="login-hint">
-                Sign in with your approved InternConnect credentials or create an account for administrator approval.
+                Sign in with your approved Intern Nexus credentials or create an account for administrator approval.
               </small>
             </>
           )}
@@ -2357,7 +2435,7 @@ function OverviewDashboard({
   const exportDashboard = () => {
     const rows = metrics.map((metric) => `${metric.label},${metric.value},${metric.delta}`)
     downloadTextFile(
-      'internconnect-dashboard-summary.csv',
+      'intern-nexus-dashboard-summary.csv',
       ['Metric,Value,Delta', ...rows].join('\n'),
       'text/csv',
     )
@@ -2572,6 +2650,7 @@ function ActivityFeed({ logs }: { logs: ActivityLog[] }) {
 function AttendanceView({
   attendanceEvents,
   checkedIn,
+  liveTick,
   onAttendanceEvent,
   placements,
   role,
@@ -2581,6 +2660,7 @@ function AttendanceView({
 }: ViewProps & {
   attendanceEvents: AttendanceEventRecord[]
   checkedIn: boolean
+  liveTick: number
   onAttendanceEvent: (event: AttendanceEventRecord) => void
   placements: InternRecord[]
   role: RoleId
@@ -2611,8 +2691,10 @@ function AttendanceView({
   const googleMapUrl = `https://www.google.com/maps/search/?api=1&query=${mapLatitude},${mapLongitude}`
   const attendanceRows = useMemo<AttendanceRecord[]>(() => {
     const rowsByStudent = new Map<string, AttendanceRecord & { openCheckIn?: Date | null; totalMs: number }>()
+    const todayKey = localDateKey(new Date())
 
     ;[...attendanceEvents]
+      .filter((event) => localDateKey(parseStoredDate(event.occurredAt)) === todayKey)
       .sort((left, right) => parseStoredDate(left.occurredAt).getTime() - parseStoredDate(right.occurredAt).getTime())
       .forEach((event) => {
       const key = event.studentNo || event.internName
@@ -2627,6 +2709,7 @@ function AttendanceView({
           name: event.internName,
           openCheckIn: null,
           status: 'Absent',
+          studentNo: event.studentNo,
           totalMs: 0,
         } satisfies AttendanceRecord & { openCheckIn?: Date | null; totalMs: number })
 
@@ -2638,6 +2721,7 @@ function AttendanceView({
         current.location = event.company
         current.openCheckIn = parseStoredDate(event.occurredAt)
         current.status = 'Working'
+        current.studentNo = event.studentNo
       } else {
         const checkedOutAt = parseStoredDate(event.occurredAt)
         if (current.openCheckIn) {
@@ -2649,6 +2733,7 @@ function AttendanceView({
         current.hours = formatHours(current.totalMs / 3_600_000)
         current.location = event.company
         current.status = 'Checked out'
+        current.studentNo = event.studentNo
       }
 
       rowsByStudent.set(key, current)
@@ -2667,9 +2752,10 @@ function AttendanceView({
 
       return record
     })
-  }, [attendanceEvents])
+  }, [attendanceEvents, liveTick])
   const personalAttendanceRows = attendanceRows.filter(
     (record) =>
+      sameCredential(record.studentNo ?? '', session.loginId) ||
       sameCredential(record.name, session.name) ||
       samePersonName(record.name, session.name) ||
       (assignedPlacement?.name ? samePersonName(record.name, assignedPlacement.name) : false),
@@ -2682,6 +2768,7 @@ function AttendanceView({
     location: assignedCompanySite.name,
     name: session.name,
     status: checkedIn ? 'Working' : 'Absent',
+    studentNo: session.loginId,
   }
   const visibleAttendanceRows =
     role === 'intern'
@@ -2801,6 +2888,30 @@ function AttendanceView({
     triggerToast('Live GPS tracking stopped')
   }
 
+  const createLocalAttendanceEvent = (type: AttendanceEventRecord['type'], location?: LiveLocation): AttendanceEventRecord => {
+    const checkedInEvent = type === 'check-in'
+    const internName = assignedPlacement?.name ?? session.name
+    const company = assignedPlacement?.company ?? session.organization
+
+    return {
+      audience: 'University Supervisor',
+      category: 'Attendance',
+      company,
+      distanceMeters: location?.distanceMeters ?? null,
+      geofencePassed: location?.geofencePassed ?? true,
+      gpsAccuracyMeters: location?.accuracy ?? null,
+      id: `ATT-LOCAL-${Date.now()}`,
+      internName,
+      message: `${internName} ${checkedInEvent ? 'checked in' : 'checked out'} at ${company}.`,
+      occurredAt: new Date().toLocaleString(),
+      status: checkedInEvent ? 'Working' : 'Checked out',
+      studentNo: assignedPlacement?.studentNo ?? session.loginId,
+      title: `${internName} ${checkedInEvent ? 'checked in' : 'checked out'}`,
+      type,
+      university: assignedPlacement?.university ?? session.organization,
+    }
+  }
+
   const saveGpsCheckIn = async (location: LiveLocation) => {
     try {
       const response = await fetch(`${apiBaseUrl}/api/attendance/check-in`, {
@@ -2839,18 +2950,16 @@ function AttendanceView({
     }
   }
 
-  const saveGpsCheckOut = async () => {
+  const saveGpsCheckOut = async (location: LiveLocation) => {
     try {
       const response = await fetch(`${apiBaseUrl}/api/attendance/check-out`, {
         body: JSON.stringify({
           company: assignedPlacement?.company ?? session.organization,
-          gps: liveLocation
-            ? {
-                accuracy: liveLocation.accuracy,
-                latitude: liveLocation.latitude,
-                longitude: liveLocation.longitude,
-              }
-            : null,
+          gps: {
+            accuracy: location.accuracy,
+            latitude: location.latitude,
+            longitude: location.longitude,
+          },
           studentNo: session.loginId,
         }),
         headers: {
@@ -2871,7 +2980,9 @@ function AttendanceView({
       setCheckedIn(false)
       triggerToast('Checked out and university supervisor notified')
     } catch {
-      triggerToast('Check-out could not be saved')
+      onAttendanceEvent(createLocalAttendanceEvent('check-out', location))
+      setCheckedIn(false)
+      triggerToast('Checked out locally; API save unavailable')
     }
   }
 
@@ -2890,16 +3001,22 @@ function AttendanceView({
           return
         }
 
-        if (result?.attendanceEvent) {
-          onAttendanceEvent(result.attendanceEvent)
-        }
+        onAttendanceEvent(result?.attendanceEvent ?? createLocalAttendanceEvent('check-in', location))
         setCheckedIn(true)
         triggerToast(
-          result?.geofencePassed === false && result.policyMode === 'local-test'
+          result === null
+            ? 'Checked in locally; API save unavailable'
+            : result.geofencePassed === false && result.policyMode === 'local-test'
             ? 'GPS captured and saved in local testing mode'
             : 'Checked in with live GPS verification',
         )
       })()
+    })
+  }
+
+  const submitCheckOut = () => {
+    requestCurrentLocation((location) => {
+      void saveGpsCheckOut(location)
     })
   }
 
@@ -2930,9 +3047,7 @@ function AttendanceView({
             </button>
             <button
               className="secondary-button"
-              onClick={() => {
-                void saveGpsCheckOut()
-              }}
+              onClick={submitCheckOut}
               type="button"
             >
               <Clock size={17} aria-hidden="true" />
@@ -3014,11 +3129,12 @@ function AttendanceView({
                 <button
                   className="secondary-button"
                   onClick={() => {
-                    const scannedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                    setQrScannedAt(scannedAt)
-                    setCheckedIn(true)
-                    triggerToast('QR attendance accepted')
-                  }}
+                const scannedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                setQrScannedAt(scannedAt)
+                setCheckedIn(true)
+                onAttendanceEvent(createLocalAttendanceEvent('check-in', liveLocation))
+                triggerToast('QR attendance accepted')
+              }}
                   type="button"
                 >
                   <QrCode size={16} aria-hidden="true" />
@@ -3128,8 +3244,10 @@ function TasksView({
   setTaskItems: Dispatch<SetStateAction<TaskRecord[]>>
   taskItems: TaskRecord[]
 }) {
-  const lanes: TaskRecord['status'][] = ['Pending', 'In Progress', 'Completed', 'Overdue', 'Rejected']
+  const lanes: TaskRecord['status'][] = ['Pending', 'In Progress', 'Submitted', 'Needs correction', 'Completed', 'Overdue', 'Rejected']
   const [composerOpen, setComposerOpen] = useState(false)
+  const [reviewDrafts, setReviewDrafts] = useState<Record<string, string>>({})
+  const [submissionDrafts, setSubmissionDrafts] = useState<Record<string, { evidenceUrl: string; note: string }>>({})
   const assignablePlacements =
     role === 'companySupervisor'
       ? placements.filter((placement) => sameCredential(placement.company, session.organization))
@@ -3137,6 +3255,8 @@ function TasksView({
   const visibleTaskItems =
     role === 'intern'
       ? taskItems.filter((task) => taskBelongsToSession(task, session))
+      : role === 'companySupervisor'
+        ? taskItems.filter((task) => sameCredential(task.company ?? '', session.organization))
       : taskItems
   const [taskDraft, setTaskDraft] = useState({
     deadline: 'Jul 05',
@@ -3145,6 +3265,14 @@ function TasksView({
     studentNo: '',
     title: '',
   })
+  const getTaskDraftKey = (task: TaskRecord) => task.id ?? `${task.studentNo ?? task.intern}-${task.title}`
+  const taskProgressForStatus = (task: TaskRecord, status: TaskRecord['status']) => {
+    if (status === 'Completed') return 100
+    if (status === 'Submitted') return Math.max(Number(task.progress ?? 0), 90)
+    if (status === 'Needs correction' || status === 'Rejected') return Math.max(Number(task.progress ?? 0), 65)
+    if (status === 'In Progress') return Math.max(Number(task.progress ?? 0), 50)
+    return Number(task.progress ?? 0)
+  }
 
   useEffect(() => {
     let ignored = false
@@ -3222,12 +3350,11 @@ function TasksView({
     triggerToast('Task created and added to Pending')
   }
 
-  const updateTaskStatus = async (task: TaskRecord, status: TaskRecord['status']) => {
-    const progress = status === 'Completed' ? 100 : status === 'In Progress' ? Math.max(task.progress, 50) : task.progress
+  const patchTask = async (task: TaskRecord, body: Partial<TaskRecord>, successMessage: string) => {
     const taskKey = task.id ?? task.title
     try {
       const payload = await apiJson<{ task: TaskRecord }>(`/api/tasks/${encodeURIComponent(taskKey)}`, {
-        body: JSON.stringify({ progress, status }),
+        body: JSON.stringify(body),
         method: 'PATCH',
       })
       setTaskItems((items) =>
@@ -3237,9 +3364,75 @@ function TasksView({
             : item,
         ),
       )
-      triggerToast(`Task moved to ${status}`)
+      triggerToast(successMessage)
+      return payload.task
     } catch (error) {
       triggerToast(error instanceof Error ? error.message : 'Task could not be updated')
+      return null
+    }
+  }
+
+  const updateTaskStatus = async (task: TaskRecord, status: TaskRecord['status']) => {
+    await patchTask(task, { progress: taskProgressForStatus(task, status), status }, `Task moved to ${status}`)
+  }
+
+  const submitTaskForReview = async (task: TaskRecord) => {
+    const taskKey = getTaskDraftKey(task)
+    const draft = submissionDrafts[taskKey] ?? { evidenceUrl: '', note: '' }
+    const submissionNote = draft.note.trim()
+    const evidenceUrl = draft.evidenceUrl.trim()
+    if (!submissionNote) {
+      triggerToast('Add a short work summary before submitting')
+      return
+    }
+    if (evidenceUrl && !/^https?:\/\//i.test(evidenceUrl)) {
+      triggerToast('Evidence link must start with http:// or https://')
+      return
+    }
+
+    const updatedTask = await patchTask(
+      task,
+      {
+        attachments: evidenceUrl ? 1 : 0,
+        evidenceUrl,
+        progress: taskProgressForStatus(task, 'Submitted'),
+        status: 'Submitted',
+        submissionNote,
+      },
+      'Task submitted for supervisor review',
+    )
+    if (updatedTask) {
+      setSubmissionDrafts((current) => {
+        const next = { ...current }
+        delete next[taskKey]
+        return next
+      })
+    }
+  }
+
+  const reviewTask = async (task: TaskRecord, status: 'Completed' | 'Needs correction') => {
+    const taskKey = getTaskDraftKey(task)
+    const reviewComment = (reviewDrafts[taskKey] ?? '').trim()
+    if (status === 'Needs correction' && !reviewComment) {
+      triggerToast('Add a correction note for the intern')
+      return
+    }
+
+    const updatedTask = await patchTask(
+      task,
+      {
+        progress: taskProgressForStatus(task, status),
+        reviewComment,
+        status,
+      },
+      status === 'Completed' ? 'Task approved as completed' : 'Task returned for corrections',
+    )
+    if (updatedTask) {
+      setReviewDrafts((current) => {
+        const next = { ...current }
+        delete next[taskKey]
+        return next
+      })
     }
   }
 
@@ -3336,44 +3529,129 @@ function TasksView({
             </div>
             {visibleTaskItems
               .filter((task) => task.status === lane)
-              .map((task) => (
-                <article className="task-card" key={task.id ?? task.title}>
-                  <div className="task-top">
-                    <StatusPill status={task.priority} />
-                    <span>{task.deadline}</span>
-                  </div>
-                  <h4>{task.title}</h4>
-                  <p>{task.intern}</p>
-                  <ProgressBar value={task.progress} />
-                  <div className="task-meta">
-                    <span>{task.progress}%</span>
-                    <span>
-                      <Paperclip size={14} aria-hidden="true" />
-                      {task.attachments}
-                    </span>
-                  </div>
-                  <div className="task-actions">
-                    {role === 'intern' && task.status === 'Pending' && (
-                      <button className="secondary-button" onClick={() => updateTaskStatus(task, 'In Progress')} type="button">
-                        <Clock size={15} aria-hidden="true" />
-                        <span>Start</span>
-                      </button>
+              .map((task) => {
+                const taskKey = getTaskDraftKey(task)
+                const submissionDraft = submissionDrafts[taskKey] ?? { evidenceUrl: task.evidenceUrl ?? '', note: '' }
+                const reviewDraft = reviewDrafts[taskKey] ?? ''
+                const canSubmitTask = role === 'intern' && ['In Progress', 'Overdue', 'Needs correction', 'Rejected'].includes(task.status)
+                const canReviewTask = role !== 'intern' && task.status === 'Submitted'
+
+                return (
+                  <article className="task-card" key={task.id ?? task.title}>
+                    <div className="task-top">
+                      <StatusPill status={task.priority} />
+                      <span>{task.deadline}</span>
+                    </div>
+                    <h4>{task.title}</h4>
+                    <p>{task.intern}</p>
+                    <ProgressBar value={task.progress} />
+                    <div className="task-meta">
+                      <span>{task.progress}%</span>
+                      <span>
+                        <Paperclip size={14} aria-hidden="true" />
+                        {task.attachments}
+                      </span>
+                    </div>
+                    {(task.submissionNote || task.evidenceUrl) && (
+                      <div className="task-note">
+                        <strong>Submitted work</strong>
+                        {task.submissionNote && <span>{task.submissionNote}</span>}
+                        {task.evidenceUrl && (
+                          <a href={task.evidenceUrl} rel="noreferrer" target="_blank">
+                            Open evidence
+                          </a>
+                        )}
+                        {task.submittedAt && <small>{task.submittedAt}</small>}
+                      </div>
                     )}
-                    {role === 'intern' && ['In Progress', 'Overdue'].includes(task.status) && (
-                      <button className="primary-button" onClick={() => updateTaskStatus(task, 'Completed')} type="button">
-                        <CheckCircle2 size={15} aria-hidden="true" />
-                        <span>Complete</span>
-                      </button>
+                    {(task.reviewComment || task.reviewedBy) && (
+                      <div className="task-note review-note">
+                        <strong>Supervisor review</strong>
+                        {task.reviewComment && <span>{task.reviewComment}</span>}
+                        {task.reviewedBy && <small>{task.reviewedBy}</small>}
+                      </div>
                     )}
-                    {role !== 'intern' && task.status !== 'Completed' && (
-                      <button className="secondary-button" onClick={() => updateTaskStatus(task, 'Completed')} type="button">
-                        <CheckCircle2 size={15} aria-hidden="true" />
-                        <span>Mark complete</span>
-                      </button>
+                    {canSubmitTask && (
+                      <div className="task-submission">
+                        <label>
+                          <span>Work summary</span>
+                          <textarea
+                            onChange={(event) =>
+                              setSubmissionDrafts((current) => ({
+                                ...current,
+                                [taskKey]: { ...submissionDraft, note: event.target.value },
+                              }))
+                            }
+                            placeholder="Summarize what you completed"
+                            rows={3}
+                            value={submissionDraft.note}
+                          />
+                        </label>
+                        <label>
+                          <span>Evidence link</span>
+                          <input
+                            onChange={(event) =>
+                              setSubmissionDrafts((current) => ({
+                                ...current,
+                                [taskKey]: { ...submissionDraft, evidenceUrl: event.target.value },
+                              }))
+                            }
+                            placeholder="https://..."
+                            value={submissionDraft.evidenceUrl}
+                          />
+                        </label>
+                      </div>
                     )}
-                  </div>
-                </article>
-              ))}
+                    {canReviewTask && (
+                      <div className="task-submission">
+                        <label>
+                          <span>Review comment</span>
+                          <textarea
+                            onChange={(event) =>
+                              setReviewDrafts((current) => ({
+                                ...current,
+                                [taskKey]: event.target.value,
+                              }))
+                            }
+                            placeholder="Comment for the intern"
+                            rows={3}
+                            value={reviewDraft}
+                          />
+                        </label>
+                      </div>
+                    )}
+                    <div className="task-actions">
+                      {role === 'intern' && task.status === 'Pending' && (
+                        <button className="secondary-button" onClick={() => updateTaskStatus(task, 'In Progress')} type="button">
+                          <Clock size={15} aria-hidden="true" />
+                          <span>Start</span>
+                        </button>
+                      )}
+                      {canSubmitTask && (
+                        <button className="primary-button" onClick={() => submitTaskForReview(task)} type="button">
+                          <Send size={15} aria-hidden="true" />
+                          <span>Submit for review</span>
+                        </button>
+                      )}
+                      {role === 'intern' && task.status === 'Submitted' && (
+                        <span className="task-state-note">Waiting for supervisor review</span>
+                      )}
+                      {canReviewTask && (
+                        <>
+                          <button className="primary-button" onClick={() => reviewTask(task, 'Completed')} type="button">
+                            <CheckCircle2 size={15} aria-hidden="true" />
+                            <span>Approve</span>
+                          </button>
+                          <button className="secondary-button" onClick={() => reviewTask(task, 'Needs correction')} type="button">
+                            <AlertTriangle size={15} aria-hidden="true" />
+                            <span>Request correction</span>
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </article>
+                )
+              })}
             {visibleTaskItems.filter((task) => task.status === lane).length === 0 && (
               <div className="lane-empty">
                 <span>No {lane.toLowerCase()} tasks</span>
@@ -4009,7 +4287,7 @@ function EvaluationsView({
     const content = manualEvaluations
       .map((evaluation) =>
         [
-          'InternConnect Manual Evaluation',
+          'Intern Nexus Manual Evaluation',
           `Intern: ${evaluation.internName}`,
           `Student number: ${evaluation.studentNo}`,
           `Company: ${evaluation.company}`,
@@ -4028,7 +4306,7 @@ function EvaluationsView({
       )
       .join('\n\n---\n\n')
 
-    downloadTextFile('internconnect-manual-evaluations.txt', content || 'No manual evaluations saved yet.')
+    downloadTextFile('intern-nexus-manual-evaluations.txt', content || 'No manual evaluations saved yet.')
     triggerToast('Evaluation file downloaded')
   }
 
@@ -4775,7 +5053,7 @@ function DirectoryView({
         .join(','),
     )
     downloadTextFile(
-      'internconnect-active-placements.csv',
+      'intern-nexus-active-placements.csv',
       [
         'Intern,Student No,Company,Location,Supervisor,University,Department,Coordinates,Radius,Attendance,Performance,Status',
         ...rows,
@@ -5384,7 +5662,7 @@ function SecurityView({
     try {
       const backup = await apiJson<{ exportedAt: string; system: string; version: string; data: unknown }>('/api/admin/backup')
       downloadTextFile(
-        `internconnect-backup-${backup.exportedAt.slice(0, 10)}.json`,
+        `intern-nexus-backup-${backup.exportedAt.slice(0, 10)}.json`,
         JSON.stringify(backup, null, 2),
         'application/json',
       )
